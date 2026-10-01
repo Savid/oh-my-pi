@@ -857,6 +857,15 @@ function buildUsage(message: AssistantMessage): Record<string, unknown> {
 		output_tokens: u.output,
 		output_tokens_details: { reasoning_tokens: u.reasoningTokens ?? 0 },
 		total_tokens: inputTokens + u.output,
+		// Anthropic's cache-write TTL split; both members come from one upstream object.
+		...(u.cttl
+			? {
+					cache_creation: {
+						ephemeral_5m_input_tokens: u.cttl.ephemeral5m ?? 0,
+						ephemeral_1h_input_tokens: u.cttl.ephemeral1h ?? 0,
+					},
+				}
+			: {}),
 		// OpenRouter's field for the USD charge, sent only when the upstream reported one.
 		...(u.reportedCost !== undefined ? { cost: u.reportedCost } : {}),
 	};

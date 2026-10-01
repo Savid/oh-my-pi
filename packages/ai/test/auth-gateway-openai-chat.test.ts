@@ -373,6 +373,21 @@ describe("auth-gateway openai-chat: encodeResponse", () => {
 		expect(encodeResponse(estimated, "gpt-test").usage).not.toHaveProperty("cost");
 	});
 
+	it("reports the cache-write TTL split as usage.cache_creation only when known", () => {
+		const message: AssistantMessage = {
+			...emptyAssistant(),
+			usage: { ...baseUsage, input: 3, output: 1, cacheWrite: 1200, cttl: { ephemeral5m: 1200 } },
+		};
+		expect(encodeResponse(message, "anthropic/claude-sonnet-5-5").usage).toEqual({
+			prompt_tokens: 1203,
+			prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 1200 },
+			completion_tokens: 1,
+			total_tokens: 1204,
+			cache_creation: { ephemeral_5m_input_tokens: 1200, ephemeral_1h_input_tokens: 0 },
+		});
+		expect(encodeResponse(emptyAssistant(), "gpt-test").usage).not.toHaveProperty("cache_creation");
+	});
+
 	it("maps length stop reason and emits null content when text is empty", () => {
 		const message: AssistantMessage = { ...emptyAssistant(), stopReason: "length" };
 		const out = encodeResponse(message, "gpt-test");
@@ -604,6 +619,28 @@ describe("auth-gateway openai-chat: encodeStream", () => {
 		expect(
 			await usageChunk({ ...baseUsage, input: 63, output: 16, cost: { ...baseUsage.cost, total: 0.5 } }),
 		).not.toHaveProperty("cost");
+	});
+
+	it("reports the cache-write TTL split on the include_usage chunk only when known", async () => {
+		const usageChunk = async (usage: AssistantMessage["usage"]): Promise<Record<string, unknown>> => {
+			const message: AssistantMessage = { ...emptyAssistant(), usage };
+			const events: AssistantMessageEvent[] = [{ type: "done", reason: "stop", message }];
+			const payloads = (
+				await collectStream(
+					encodeStream(makeEventStream(events, message), "gpt-test", { extra: { includeStreamingUsage: true } }),
+				)
+			).map(parseSseLine) as Array<Record<string, unknown>>;
+			return payloads.find(payload => typeof payload === "object" && payload.usage)?.usage as Record<
+				string,
+				unknown
+			>;
+		};
+
+		expect(
+			(await usageChunk({ ...baseUsage, cacheWrite: 1500, cttl: { ephemeral5m: 300, ephemeral1h: 1200 } }))
+				.cache_creation,
+		).toEqual({ ephemeral_5m_input_tokens: 300, ephemeral_1h_input_tokens: 1200 });
+		expect(await usageChunk({ ...baseUsage, cacheWrite: 1500 })).not.toHaveProperty("cache_creation");
 	});
 
 	it("emits an error envelope when the stream errors", async () => {

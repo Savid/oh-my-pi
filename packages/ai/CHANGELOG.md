@@ -5,6 +5,7 @@
 ### Added
 
 - Added `usage.cost` to auth gateway Anthropic Messages, Chat Completions and Responses usage when the upstream reports the charge (OpenRouter `usage.cost`, not bring-your-own-key); estimated catalog prices are never sent
+- Added `usage.cache_creation` (`ephemeral_5m_input_tokens`, `ephemeral_1h_input_tokens`) to auth gateway Anthropic Messages, Chat Completions and Responses usage when Anthropic reports the cache-write TTL split
 
 ### Fixed
 

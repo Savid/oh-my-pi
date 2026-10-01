@@ -577,6 +577,15 @@ function encodeUsage(message: AssistantMessage): Record<string, unknown> {
 		output_tokens: message.usage.output,
 		cache_read_input_tokens: message.usage.cacheRead,
 		cache_creation_input_tokens: message.usage.cacheWrite,
+		// Anthropic's cache-write TTL split; both members come from one upstream object.
+		...(message.usage.cttl
+			? {
+					cache_creation: {
+						ephemeral_5m_input_tokens: message.usage.cttl.ephemeral5m ?? 0,
+						ephemeral_1h_input_tokens: message.usage.cttl.ephemeral1h ?? 0,
+					},
+				}
+			: {}),
 		// OpenRouter's field for the USD charge, sent only when the upstream reported one.
 		...(message.usage.reportedCost !== undefined ? { cost: message.usage.reportedCost } : {}),
 	};

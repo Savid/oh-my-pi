@@ -885,6 +885,28 @@ describe("openai-responses encodeResponse", () => {
 		expect(encodeResponse(estimated, "m").usage).not.toHaveProperty("cost");
 	});
 
+	it("reports the cache-write TTL split as usage.cache_creation only when known", () => {
+		const message: AssistantMessage = {
+			role: "assistant",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-5-5",
+			content: [{ type: "text", text: "ok" }],
+			usage: { ...zeroUsage(), input: 3, output: 1, cacheWrite: 1200, cttl: { ephemeral1h: 1200 } },
+			stopReason: "stop",
+			timestamp: 1_700_000_000_000,
+		};
+		expect(encodeResponse(message, "anthropic/claude-sonnet-5-5").usage).toEqual({
+			input_tokens: 1203,
+			input_tokens_details: { cached_tokens: 0, cache_write_tokens: 1200 },
+			output_tokens: 1,
+			output_tokens_details: { reasoning_tokens: 0 },
+			total_tokens: 1204,
+			cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1200 },
+		});
+		expect(encodeResponse({ ...message, usage: zeroUsage() }, "m").usage).not.toHaveProperty("cache_creation");
+	});
+
 	it("encodes assistant message phase from text signatures", () => {
 		const message: AssistantMessage = {
 			role: "assistant",
@@ -993,6 +1015,35 @@ describe("openai-responses encodeResponse", () => {
 });
 
 describe("openai-responses encodeStream", () => {
+	it("reports the cache-write TTL split on response.completed usage only when known", async () => {
+		const completedUsage = async (usage: AssistantMessage["usage"]): Promise<Record<string, unknown>> => {
+			const stream = new AssistantMessageEventStream();
+			const message: AssistantMessage = {
+				role: "assistant",
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-5-5",
+				content: [],
+				usage,
+				stopReason: "stop",
+				timestamp: 1_700_000_000_000,
+			};
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: message });
+				stream.push({ type: "done", reason: "stop", message });
+			});
+			const frames = parseSse(await collectStream(encodeStream(stream, "anthropic/claude-sonnet-5-5")));
+			const completed = frames.find(f => f.event === "response.completed")?.data as Record<string, unknown>;
+			return (completed.response as Record<string, unknown>).usage as Record<string, unknown>;
+		};
+
+		expect(
+			(await completedUsage({ ...zeroUsage(), cacheWrite: 1500, cttl: { ephemeral5m: 300, ephemeral1h: 1200 } }))
+				.cache_creation,
+		).toEqual({ ephemeral_5m_input_tokens: 300, ephemeral_1h_input_tokens: 1200 });
+		expect(await completedUsage({ ...zeroUsage(), cacheWrite: 1500 })).not.toHaveProperty("cache_creation");
+	});
+
 	it("reports the upstream's charge on response.completed usage", async () => {
 		const completedUsage = async (usage: AssistantMessage["usage"]): Promise<Record<string, unknown>> => {
 			const stream = new AssistantMessageEventStream();

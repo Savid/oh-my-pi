@@ -670,6 +670,29 @@ describe("anthropic-messages encodeResponse", () => {
 		expect(encodeResponse(estimated, "m").usage).not.toHaveProperty("cost");
 	});
 
+	it("reports the cache-write TTL split as usage.cache_creation only when known", () => {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "hi" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-5-5",
+			usage: { ...emptyUsage(), input: 3, output: 1, cacheWrite: 1200, cttl: { ephemeral1h: 1200 } },
+			stopReason: "stop",
+			timestamp: 0,
+		};
+		expect(encodeResponse(message, "claude-sonnet-5-5").usage).toEqual({
+			input_tokens: 3,
+			output_tokens: 1,
+			cache_read_input_tokens: 0,
+			cache_creation_input_tokens: 1200,
+			cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1200 },
+		});
+
+		const { cttl: _cttl, ...withoutSplit } = message.usage;
+		expect(encodeResponse({ ...message, usage: withoutSplit }, "m").usage).not.toHaveProperty("cache_creation");
+	});
+
 	it("maps stop reasons and rejects upstream terminal errors", () => {
 		const base: AssistantMessage = {
 			role: "assistant",
@@ -1177,6 +1200,58 @@ describe("anthropic-messages encodeStream", () => {
 			encodeStream(makeStream([{ type: "done", reason: "stop", message: estimated }]), "m"),
 		);
 		expect(estimatedSse.find(event => event.event === "message_delta")?.data.usage).not.toHaveProperty("cost");
+	});
+
+	it("reports the cache-write TTL split on message_start and the final message_delta", async () => {
+		const usage = {
+			...emptyUsage(),
+			input: 3,
+			output: 1,
+			cacheWrite: 1500,
+			cttl: { ephemeral5m: 300, ephemeral1h: 1200 },
+		};
+		const finalMessage: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "hi" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-5-5",
+			usage,
+			stopReason: "stop",
+			timestamp: 0,
+		};
+		const events: AssistantMessageEvent[] = [
+			{ type: "start", partial: { ...finalMessage, content: [] } },
+			{ type: "text_start", contentIndex: 0, partial: finalMessage },
+			{ type: "text_delta", contentIndex: 0, delta: "hi", partial: finalMessage },
+			{ type: "text_end", contentIndex: 0, content: "hi", partial: finalMessage },
+			{ type: "done", reason: "stop", message: finalMessage },
+		];
+		const sse = await collectSse(encodeStream(makeStream(events), "claude-sonnet-5-5"));
+		const split = { ephemeral_5m_input_tokens: 300, ephemeral_1h_input_tokens: 1200 };
+		const start = sse.find(event => event.event === "message_start")!.data as {
+			message: { usage: Record<string, unknown> };
+		};
+		expect(start.message.usage.cache_creation).toEqual(split);
+		expect(sse.find(event => event.event === "message_delta")?.data.usage).toMatchObject({ cache_creation: split });
+
+		const plain: AssistantMessage = { ...finalMessage, usage: emptyUsage() };
+		const plainSse = await collectSse(
+			encodeStream(
+				makeStream([
+					{ type: "start", partial: plain },
+					{ type: "done", reason: "stop", message: plain },
+				]),
+				"m",
+			),
+		);
+		for (const name of ["message_start", "message_delta"]) {
+			const data = plainSse.find(event => event.event === name)!.data as {
+				usage?: object;
+				message?: { usage: object };
+			};
+			expect(data.usage ?? data.message?.usage).not.toHaveProperty("cache_creation");
+		}
 	});
 
 	it("emits a complete envelope when the stream ends without an explicit done", async () => {
