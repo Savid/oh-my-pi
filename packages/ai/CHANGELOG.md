@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the auth gateway dropping a Claude Code system prompt sent to `/v1/messages`: system blocks now stay separate instead of merging into the leading `x-anthropic-billing-header` block
+- Fixed OpenRouter requests forcing OpenRouter's response cache, which replayed identical requests with zero usage; response caching is now off unless the caller sets `X-OpenRouter-Cache`
+- Fixed auth gateway Chat Completions and Responses usage omitting cache writes; they now report `cache_write_tokens` alongside `cached_tokens`
+
 ## [18.5.0] - 2026-10-03
 
 ### Fixed
