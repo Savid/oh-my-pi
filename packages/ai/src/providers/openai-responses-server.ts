@@ -857,6 +857,8 @@ function buildUsage(message: AssistantMessage): Record<string, unknown> {
 		output_tokens: u.output,
 		output_tokens_details: { reasoning_tokens: u.reasoningTokens ?? 0 },
 		total_tokens: inputTokens + u.output,
+		// OpenRouter's field for the USD charge, sent only when the upstream reported one.
+		...(u.reportedCost !== undefined ? { cost: u.reportedCost } : {}),
 	};
 }
 

@@ -858,6 +858,33 @@ describe("openai-responses encodeResponse", () => {
 		});
 	});
 
+	it("reports the upstream's charge as usage.cost and omits an estimated cost", () => {
+		const message: AssistantMessage = {
+			role: "assistant",
+			api: "openai-completions",
+			provider: "openrouter",
+			model: "qwen/qwen3.8-flash",
+			content: [{ type: "text", text: "ok" }],
+			usage: { ...zeroUsage(), input: 63, output: 16, reasoningTokens: 16, reportedCost: 0.00001697 },
+			stopReason: "stop",
+			timestamp: 1_700_000_000_000,
+		};
+		expect(encodeResponse(message, "openrouter/qwen/qwen3.8-flash").usage).toEqual({
+			input_tokens: 63,
+			input_tokens_details: { cached_tokens: 0 },
+			output_tokens: 16,
+			output_tokens_details: { reasoning_tokens: 16 },
+			total_tokens: 79,
+			cost: 0.00001697,
+		});
+
+		const estimated: AssistantMessage = {
+			...message,
+			usage: { ...zeroUsage(), input: 63, output: 16, cost: { ...zeroUsage().cost, total: 0.5 } },
+		};
+		expect(encodeResponse(estimated, "m").usage).not.toHaveProperty("cost");
+	});
+
 	it("encodes assistant message phase from text signatures", () => {
 		const message: AssistantMessage = {
 			role: "assistant",
@@ -966,6 +993,43 @@ describe("openai-responses encodeResponse", () => {
 });
 
 describe("openai-responses encodeStream", () => {
+	it("reports the upstream's charge on response.completed usage", async () => {
+		const completedUsage = async (usage: AssistantMessage["usage"]): Promise<Record<string, unknown>> => {
+			const stream = new AssistantMessageEventStream();
+			const message: AssistantMessage = {
+				role: "assistant",
+				api: "openai-completions",
+				provider: "openrouter",
+				model: "qwen/qwen3.8-flash",
+				content: [],
+				usage,
+				stopReason: "stop",
+				timestamp: 1_700_000_000_000,
+			};
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: { ...message, usage: zeroUsage() } });
+				stream.push({ type: "done", reason: "stop", message });
+			});
+			const frames = parseSse(await collectStream(encodeStream(stream, "openrouter/qwen/qwen3.8-flash")));
+			const created = frames.find(f => f.event === "response.created")?.data as Record<string, unknown>;
+			expect((created.response as Record<string, unknown>).usage).toBeNull();
+			const completed = frames.find(f => f.event === "response.completed")?.data as Record<string, unknown>;
+			return (completed.response as Record<string, unknown>).usage as Record<string, unknown>;
+		};
+
+		expect(await completedUsage({ ...zeroUsage(), input: 63, output: 16, reportedCost: 0.00001697 })).toEqual({
+			input_tokens: 63,
+			input_tokens_details: { cached_tokens: 0 },
+			output_tokens: 16,
+			output_tokens_details: { reasoning_tokens: 0 },
+			total_tokens: 79,
+			cost: 0.00001697,
+		});
+		expect(
+			await completedUsage({ ...zeroUsage(), input: 63, output: 16, cost: { ...zeroUsage().cost, total: 0.5 } }),
+		).not.toHaveProperty("cost");
+	});
+
 	it("emits response.created, reasoning_summary_text.delta, output_text.delta, function_call_arguments.delta, response.completed, [DONE]", async () => {
 		const stream = new AssistantMessageEventStream();
 

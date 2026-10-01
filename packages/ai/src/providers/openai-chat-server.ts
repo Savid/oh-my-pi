@@ -528,6 +528,8 @@ function buildUsage(message: AssistantMessage): Record<string, unknown> {
 	if (message.usage.reasoningTokens !== undefined) {
 		usage.completion_tokens_details = { reasoning_tokens: message.usage.reasoningTokens };
 	}
+	// OpenRouter's field for the USD charge, sent only when the upstream reported one.
+	if (message.usage.reportedCost !== undefined) usage.cost = message.usage.reportedCost;
 	return usage;
 }
 

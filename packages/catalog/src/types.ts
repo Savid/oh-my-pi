@@ -199,6 +199,12 @@ export interface Usage {
 		/** Final committed ACU cost, when reported. */
 		acuCost?: number;
 	};
+	/**
+	 * USD charge the provider reported for this response (OpenRouter `usage.cost`).
+	 * Undefined when the provider reported none, or reported a bring-your-own-key
+	 * charge, which covers only the router's fee. `cost` may still hold an estimate.
+	 */
+	reportedCost?: number;
 	cost: {
 		input: number;
 		output: number;

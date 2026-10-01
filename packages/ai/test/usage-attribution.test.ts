@@ -80,6 +80,26 @@ describe("openai-completions parseChunkUsage", () => {
 
 		expect(usage.cost.total).toBe(0.42);
 		expect(usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite).toBeCloseTo(0.42);
+		expect(usage.reportedCost).toBe(0.42);
+	});
+
+	it("keeps reportedCost unset for estimates and bring-your-own-key charges", () => {
+		const estimated = parseChunkUsage({ prompt_tokens: 1_000, completion_tokens: 100 }, OPENROUTER_MODEL, undefined);
+		expect(estimated.reportedCost).toBeUndefined();
+
+		const byok = parseChunkUsage(
+			{ prompt_tokens: 1_000, completion_tokens: 100, cost: 0.001, is_byok: true },
+			OPENROUTER_MODEL,
+			undefined,
+		);
+		expect(byok.reportedCost).toBeUndefined();
+
+		const direct = parseChunkUsage(
+			{ prompt_tokens: 1_000, completion_tokens: 100, cost: 0.42 },
+			OPENAI_MODEL,
+			undefined,
+		);
+		expect(direct.reportedCost).toBeUndefined();
 	});
 
 	it("omits reasoningTokens when no reasoning_tokens are reported", () => {

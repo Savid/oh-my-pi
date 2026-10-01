@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `usage.cost` to auth gateway Anthropic Messages, Chat Completions and Responses usage when the upstream reports the charge (OpenRouter `usage.cost`, not bring-your-own-key); estimated catalog prices are never sent
+
 ### Fixed
 
 - Fixed the auth gateway dropping a Claude Code system prompt sent to `/v1/messages`: system blocks now stay separate instead of merging into the leading `x-anthropic-billing-header` block

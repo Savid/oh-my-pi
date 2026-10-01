@@ -353,6 +353,26 @@ describe("auth-gateway openai-chat: encodeResponse", () => {
 		});
 	});
 
+	it("reports the upstream's charge as usage.cost and omits an estimated cost", () => {
+		const reported: AssistantMessage = {
+			...emptyAssistant(),
+			usage: { ...baseUsage, input: 63, output: 16, totalTokens: 79, reportedCost: 0.00001697 },
+		};
+		expect(encodeResponse(reported, "openrouter/qwen/qwen3.8-flash").usage).toEqual({
+			prompt_tokens: 63,
+			prompt_tokens_details: { cached_tokens: 0 },
+			completion_tokens: 16,
+			total_tokens: 79,
+			cost: 0.00001697,
+		});
+
+		const estimated: AssistantMessage = {
+			...emptyAssistant(),
+			usage: { ...baseUsage, input: 63, output: 16, cost: { ...baseUsage.cost, total: 0.5 } },
+		};
+		expect(encodeResponse(estimated, "gpt-test").usage).not.toHaveProperty("cost");
+	});
+
 	it("maps length stop reason and emits null content when text is empty", () => {
 		const message: AssistantMessage = { ...emptyAssistant(), stopReason: "length" };
 		const out = encodeResponse(message, "gpt-test");
@@ -556,6 +576,34 @@ describe("auth-gateway openai-chat: encodeStream", () => {
 		expect(body?.thinking?.type).toBe("enabled");
 		const assistant = body?.messages?.find(message => message.role === "assistant");
 		expect((assistant?.content as unknown[] | undefined)?.[0]).toEqual({ type: "thinking", thinking, signature });
+	});
+
+	it("reports the upstream's charge on the include_usage chunk", async () => {
+		const usageChunk = async (usage: AssistantMessage["usage"]): Promise<Record<string, unknown>> => {
+			const message: AssistantMessage = { ...emptyAssistant(), usage };
+			const events: AssistantMessageEvent[] = [{ type: "done", reason: "stop", message }];
+			const payloads = (
+				await collectStream(
+					encodeStream(makeEventStream(events, message), "gpt-test", { extra: { includeStreamingUsage: true } }),
+				)
+			).map(parseSseLine) as Array<Record<string, unknown>>;
+			const chunk = payloads.find(payload => typeof payload === "object" && payload.usage);
+			expect(chunk?.choices).toEqual([]);
+			return chunk?.usage as Record<string, unknown>;
+		};
+
+		expect(
+			await usageChunk({ ...baseUsage, input: 63, output: 16, totalTokens: 79, reportedCost: 0.00001697 }),
+		).toEqual({
+			prompt_tokens: 63,
+			prompt_tokens_details: { cached_tokens: 0 },
+			completion_tokens: 16,
+			total_tokens: 79,
+			cost: 0.00001697,
+		});
+		expect(
+			await usageChunk({ ...baseUsage, input: 63, output: 16, cost: { ...baseUsage.cost, total: 0.5 } }),
+		).not.toHaveProperty("cost");
 	});
 
 	it("emits an error envelope when the stream errors", async () => {

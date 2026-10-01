@@ -432,6 +432,7 @@ export function applyProviderReportedCost(model: Pick<Model, "provider">, usage:
 		usage.cost.cacheWrite = 0;
 	}
 	usage.cost.total = reportedCost;
+	if (Reflect.get(rawUsage, "is_byok") !== true) usage.reportedCost = reportedCost;
 }
 
 export interface OpenAIUsageAccountingInput {

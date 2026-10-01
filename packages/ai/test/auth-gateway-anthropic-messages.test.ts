@@ -644,6 +644,32 @@ describe("anthropic-messages encodeResponse", () => {
 		expect((encoded.id as string).startsWith("msg_")).toBe(true);
 	});
 
+	it("reports the upstream's charge as usage.cost and omits an estimated cost", () => {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "hi" }],
+			api: "openai-completions",
+			provider: "openrouter",
+			model: "qwen/qwen3.8-flash",
+			usage: { ...emptyUsage(), input: 63, output: 16, totalTokens: 79, reportedCost: 0.00001697 },
+			stopReason: "stop",
+			timestamp: 0,
+		};
+		expect(encodeResponse(message, "openrouter/qwen/qwen3.8-flash").usage).toEqual({
+			input_tokens: 63,
+			output_tokens: 16,
+			cache_read_input_tokens: 0,
+			cache_creation_input_tokens: 0,
+			cost: 0.00001697,
+		});
+
+		const estimated: AssistantMessage = {
+			...message,
+			usage: { ...emptyUsage(), input: 63, output: 16, cost: { ...emptyUsage().cost, total: 0.5 } },
+		};
+		expect(encodeResponse(estimated, "m").usage).not.toHaveProperty("cost");
+	});
+
 	it("maps stop reasons and rejects upstream terminal errors", () => {
 		const base: AssistantMessage = {
 			role: "assistant",
@@ -1112,6 +1138,45 @@ describe("anthropic-messages encodeStream", () => {
 			stop_reason: "end_turn",
 			stop_sequence: null,
 		});
+	});
+
+	it("reports the upstream's charge on the final message_delta only", async () => {
+		const finalMessage: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "hi" }],
+			api: "openai-completions",
+			provider: "openrouter",
+			model: "qwen/qwen3.8-flash",
+			usage: { ...emptyUsage(), input: 63, output: 16, totalTokens: 79, reportedCost: 0.00001697 },
+			stopReason: "stop",
+			timestamp: 0,
+		};
+		const events: AssistantMessageEvent[] = [
+			{ type: "start", partial: { ...finalMessage, usage: emptyUsage() } },
+			{ type: "text_start", contentIndex: 0, partial: finalMessage },
+			{ type: "text_delta", contentIndex: 0, delta: "hi", partial: finalMessage },
+			{ type: "text_end", contentIndex: 0, content: "hi", partial: finalMessage },
+			{ type: "done", reason: "stop", message: finalMessage },
+		];
+		const sse = await collectSse(encodeStream(makeStream(events), "openrouter/qwen/qwen3.8-flash"));
+		const start = sse.find(event => event.event === "message_start")!.data as { message: { usage: object } };
+		expect(start.message.usage).not.toHaveProperty("cost");
+		expect(sse.find(event => event.event === "message_delta")?.data.usage).toEqual({
+			input_tokens: 63,
+			output_tokens: 16,
+			cache_read_input_tokens: 0,
+			cache_creation_input_tokens: 0,
+			cost: 0.00001697,
+		});
+
+		const estimated: AssistantMessage = {
+			...finalMessage,
+			usage: { ...emptyUsage(), output: 16, cost: { ...emptyUsage().cost, total: 0.5 } },
+		};
+		const estimatedSse = await collectSse(
+			encodeStream(makeStream([{ type: "done", reason: "stop", message: estimated }]), "m"),
+		);
+		expect(estimatedSse.find(event => event.event === "message_delta")?.data.usage).not.toHaveProperty("cost");
 	});
 
 	it("emits a complete envelope when the stream ends without an explicit done", async () => {

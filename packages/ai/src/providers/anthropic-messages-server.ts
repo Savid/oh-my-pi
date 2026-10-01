@@ -577,6 +577,8 @@ function encodeUsage(message: AssistantMessage): Record<string, unknown> {
 		output_tokens: message.usage.output,
 		cache_read_input_tokens: message.usage.cacheRead,
 		cache_creation_input_tokens: message.usage.cacheWrite,
+		// OpenRouter's field for the USD charge, sent only when the upstream reported one.
+		...(message.usage.reportedCost !== undefined ? { cost: message.usage.reportedCost } : {}),
 	};
 }
 
