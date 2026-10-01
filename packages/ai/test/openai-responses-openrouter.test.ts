@@ -412,7 +412,16 @@ describe("OpenRouter Responses request shape", () => {
 		expect(request.body.max_output_tokens).toBe(64_000);
 	});
 
-	it("lets caller headers override OpenRouter attribution and cache defaults", async () => {
+	it("leaves OpenRouter response caching off unless the caller opts in", async () => {
+		// A forced response cache replays identical requests with zero usage.
+		const { headers } = await captureRequest(buildOpenRouterResponsesModel());
+
+		expect(headers.get("X-OpenRouter-Title")).not.toBeNull();
+		expect(headers.has("X-OpenRouter-Cache")).toBe(false);
+		expect(headers.has("X-OpenRouter-Cache-TTL")).toBe(false);
+	});
+
+	it("lets caller headers override OpenRouter attribution and set response caching", async () => {
 		const { headers } = await captureRequest(buildOpenRouterResponsesModel(), {
 			headers: {
 				"HTTP-Referer": "https://caller.example/",
