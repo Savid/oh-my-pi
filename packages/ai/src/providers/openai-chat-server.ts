@@ -461,7 +461,11 @@ function buildUsage(message: AssistantMessage): Record<string, unknown> {
 		prompt_tokens: promptTokens,
 		completion_tokens: message.usage.output,
 		total_tokens: promptTokens + message.usage.output,
-		prompt_tokens_details: { cached_tokens: message.usage.cacheRead },
+		prompt_tokens_details: {
+			cached_tokens: message.usage.cacheRead,
+			// OpenRouter's field name for prompt tokens written to the cache.
+			...(message.usage.cacheWrite > 0 ? { cache_write_tokens: message.usage.cacheWrite } : {}),
+		},
 	};
 	if (message.usage.reasoningTokens !== undefined) {
 		usage.completion_tokens_details = { reasoning_tokens: message.usage.reasoningTokens };

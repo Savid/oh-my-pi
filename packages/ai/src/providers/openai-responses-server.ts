@@ -849,7 +849,11 @@ function buildUsage(message: AssistantMessage): Record<string, unknown> {
 	const inputTokens = u.input + u.cacheRead + u.cacheWrite;
 	return {
 		input_tokens: inputTokens,
-		input_tokens_details: { cached_tokens: u.cacheRead },
+		input_tokens_details: {
+			cached_tokens: u.cacheRead,
+			// OpenRouter's field name for input tokens written to the cache.
+			...(u.cacheWrite > 0 ? { cache_write_tokens: u.cacheWrite } : {}),
+		},
 		output_tokens: u.output,
 		output_tokens_details: { reasoning_tokens: u.reasoningTokens ?? 0 },
 		total_tokens: inputTokens + u.output,
