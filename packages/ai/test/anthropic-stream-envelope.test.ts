@@ -396,6 +396,17 @@ describe("anthropic stream envelope handling", () => {
 		expect(JSON.parse(JSON.stringify(result.content))).toEqual([{ type: "text", text: "hello" }]);
 	});
 
+	it("marks a reported zero cache-write count as reported", async () => {
+		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(
+			() => createMockRequest(createTextSuccessEvents("hello")) as never,
+		);
+
+		const result = await streamAnthropic(model, context, { apiKey: "sk-ant-test" }).result();
+
+		expect(result.usage.cacheWrite).toBe(0);
+		expect(result.usage.cacheWriteReported).toBe(true);
+	});
+
 	it("decodes escaped Anthropic built-in tool names from compatible gateways", async () => {
 		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(
 			() =>

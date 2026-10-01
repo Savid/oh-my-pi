@@ -340,7 +340,20 @@ describe("auth-gateway openai-chat: encodeResponse", () => {
 		});
 	});
 
-	it("omits cache_write_tokens when the turn wrote nothing to the cache", () => {
+	it("sends a reported zero cache-write count", () => {
+		const message: AssistantMessage = {
+			...emptyAssistant(),
+			usage: { ...baseUsage, input: 10, output: 20, cacheRead: 4, totalTokens: 34, cacheWriteReported: true },
+		};
+		expect(encodeResponse(message, "gpt-test").usage).toEqual({
+			prompt_tokens: 14,
+			prompt_tokens_details: { cached_tokens: 4, cache_write_tokens: 0 },
+			completion_tokens: 20,
+			total_tokens: 34,
+		});
+	});
+
+	it("omits cache_write_tokens when the upstream did not report it", () => {
 		const message: AssistantMessage = {
 			...emptyAssistant(),
 			usage: { ...baseUsage, input: 10, output: 20, cacheRead: 4, cacheWrite: 0, totalTokens: 34 },
@@ -641,6 +654,29 @@ describe("auth-gateway openai-chat: encodeStream", () => {
 				.cache_creation,
 		).toEqual({ ephemeral_5m_input_tokens: 300, ephemeral_1h_input_tokens: 1200 });
 		expect(await usageChunk({ ...baseUsage, cacheWrite: 1500 })).not.toHaveProperty("cache_creation");
+	});
+
+	it("sends reported cache-write counts on the include_usage chunk", async () => {
+		const details = async (usage: AssistantMessage["usage"]): Promise<unknown> => {
+			const message: AssistantMessage = { ...emptyAssistant(), usage };
+			const events: AssistantMessageEvent[] = [{ type: "done", reason: "stop", message }];
+			const payloads = (
+				await collectStream(
+					encodeStream(makeEventStream(events, message), "gpt-test", { extra: { includeStreamingUsage: true } }),
+				)
+			).map(parseSseLine) as Array<Record<string, { prompt_tokens_details?: unknown }>>;
+			return payloads.find(payload => typeof payload === "object" && payload.usage)?.usage.prompt_tokens_details;
+		};
+
+		expect(await details({ ...baseUsage, cacheWriteReported: true })).toEqual({
+			cached_tokens: 0,
+			cache_write_tokens: 0,
+		});
+		expect(await details({ ...baseUsage, cacheWrite: 7, cacheWriteReported: true })).toEqual({
+			cached_tokens: 0,
+			cache_write_tokens: 7,
+		});
+		expect(await details(baseUsage)).toEqual({ cached_tokens: 0 });
 	});
 
 	it("emits an error envelope when the stream errors", async () => {

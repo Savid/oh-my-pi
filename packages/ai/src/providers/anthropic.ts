@@ -2669,6 +2669,7 @@ const streamAnthropicOnce = (
 								output.usage.output = startUsage.output_tokens || 0;
 								output.usage.cacheRead = startUsage.cache_read_input_tokens || 0;
 								output.usage.cacheWrite = startUsage.cache_creation_input_tokens || 0;
+								if (startUsage.cache_creation_input_tokens != null) output.usage.cacheWriteReported = true;
 								const compacted = applyCompactionIterationUsage(output.usage, startUsage);
 								output.usage.totalTokens =
 									output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
@@ -3040,6 +3041,7 @@ const streamAnthropicOnce = (
 								}
 								if (deltaUsage.cache_creation_input_tokens != null) {
 									output.usage.cacheWrite = deltaUsage.cache_creation_input_tokens;
+									output.usage.cacheWriteReported = true;
 								}
 								applyAnthropicUsageExtras(output.usage, deltaUsage);
 								const compacted = applyCompactionIterationUsage(output.usage, deltaUsage);

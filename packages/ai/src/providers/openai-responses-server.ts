@@ -851,8 +851,9 @@ function buildUsage(message: AssistantMessage): Record<string, unknown> {
 		input_tokens: inputTokens,
 		input_tokens_details: {
 			cached_tokens: u.cacheRead,
-			// OpenRouter's field name for input tokens written to the cache.
-			...(u.cacheWrite > 0 ? { cache_write_tokens: u.cacheWrite } : {}),
+			// OpenRouter's field name for input tokens written to the cache; a reported
+			// zero is sent, an unreported count is left out.
+			...(u.cacheWriteReported || u.cacheWrite > 0 ? { cache_write_tokens: u.cacheWrite } : {}),
 		},
 		output_tokens: u.output,
 		// Unknown reasoning stays absent rather than reading as zero.

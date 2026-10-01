@@ -144,7 +144,43 @@ describe("openai-completions parseChunkUsage", () => {
 		expect(usage.input).toBe(200);
 		expect(usage.cacheRead).toBe(5_800);
 		expect(usage.cacheWrite).toBe(0);
+		expect(usage.cacheWriteReported).toBe(true);
 		expect(usage.totalTokens).toBe(6_250);
+	});
+
+	it("leaves cacheWriteReported unset when no cache-write count is reported", () => {
+		const chat = parseChunkUsage(
+			{ prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 0 } },
+			OPENAI_MODEL,
+			undefined,
+		);
+		expect(chat.cacheWriteReported).toBeUndefined();
+
+		const responses: AssistantMessage = {
+			role: "assistant",
+			content: [],
+			api: "openai-responses",
+			provider: "openrouter",
+			model: "qwen/qwen3.8-flash",
+			usage: blankUsage(),
+			stopReason: "stop",
+			timestamp: 0,
+		};
+		populateResponsesUsageFromResponse(responses, {
+			input_tokens: 100,
+			output_tokens: 5,
+			total_tokens: 105,
+			input_tokens_details: { cached_tokens: 0 },
+		});
+		expect(responses.usage.cacheWriteReported).toBeUndefined();
+
+		populateResponsesUsageFromResponse(responses, {
+			input_tokens: 100,
+			output_tokens: 5,
+			total_tokens: 105,
+			input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+		});
+		expect(responses.usage.cacheWriteReported).toBe(true);
 	});
 
 	it("reads Vertex/Gemini cachedContentTokenCount as a cache-read source", () => {

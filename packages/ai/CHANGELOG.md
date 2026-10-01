@@ -12,7 +12,7 @@
 - Fixed auth gateway Responses usage reporting `reasoning_tokens: 0` when the upstream did not report reasoning tokens; `output_tokens_details` is now omitted, as in Chat Completions
 - Fixed the auth gateway dropping a Claude Code system prompt sent to `/v1/messages`: system blocks now stay separate instead of merging into the leading `x-anthropic-billing-header` block
 - Fixed OpenRouter requests forcing OpenRouter's response cache, which replayed identical requests with zero usage; response caching is now off unless the caller sets `X-OpenRouter-Cache`
-- Fixed auth gateway Chat Completions and Responses usage omitting cache writes; they now report `cache_write_tokens` alongside `cached_tokens`
+- Fixed auth gateway Chat Completions and Responses usage omitting cache writes; they now report `cache_write_tokens` alongside `cached_tokens` whenever the upstream reported a count, including zero
 - Fixed Anthropic thinking through the auth gateway's Chat Completions route turning off after a tool call and missing the prompt cache: thinking is now sent with its signature in `reasoning_details` and replayed signed
 
 ## [18.5.0] - 2026-10-03

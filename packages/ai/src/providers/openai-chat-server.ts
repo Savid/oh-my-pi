@@ -521,8 +521,11 @@ function buildUsage(message: AssistantMessage): Record<string, unknown> {
 		total_tokens: promptTokens + message.usage.output,
 		prompt_tokens_details: {
 			cached_tokens: message.usage.cacheRead,
-			// OpenRouter's field name for prompt tokens written to the cache.
-			...(message.usage.cacheWrite > 0 ? { cache_write_tokens: message.usage.cacheWrite } : {}),
+			// OpenRouter's field name for prompt tokens written to the cache; a reported
+			// zero is sent, an unreported count is left out.
+			...(message.usage.cacheWriteReported || message.usage.cacheWrite > 0
+				? { cache_write_tokens: message.usage.cacheWrite }
+				: {}),
 		},
 	};
 	if (message.usage.reasoningTokens !== undefined) {

@@ -205,6 +205,8 @@ export interface Usage {
 	 * charge, which covers only the router's fee. `cost` may still hold an estimate.
 	 */
 	reportedCost?: number;
+	/** True when the provider reported the cache-write count, so a `cacheWrite` of 0 is a reported zero. */
+	cacheWriteReported?: boolean;
 	cost: {
 		input: number;
 		output: number;

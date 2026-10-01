@@ -837,7 +837,24 @@ describe("openai-responses encodeResponse", () => {
 		});
 	});
 
-	it("omits cache_write_tokens when the turn wrote nothing to the cache", () => {
+	it("sends a reported zero cache-write count", () => {
+		const message: AssistantMessage = {
+			role: "assistant",
+			api: "openai-responses",
+			provider: "openai",
+			model: "gpt-5",
+			content: [{ type: "text", text: "ok" }],
+			usage: { ...zeroUsage(), input: 10, output: 20, cacheRead: 4, cacheWriteReported: true },
+			stopReason: "stop",
+			timestamp: 1_700_000_000_000,
+		};
+
+		expect(encodeResponse(message, "gpt-5-requested").usage).toMatchObject({
+			input_tokens_details: { cached_tokens: 4, cache_write_tokens: 0 },
+		});
+	});
+
+	it("omits cache_write_tokens when the upstream did not report it", () => {
 		const message: AssistantMessage = {
 			role: "assistant",
 			api: "openai-responses",
@@ -1030,6 +1047,39 @@ describe("openai-responses encodeResponse", () => {
 });
 
 describe("openai-responses encodeStream", () => {
+	it("sends reported cache-write counts on response.completed usage", async () => {
+		const details = async (usage: AssistantMessage["usage"]): Promise<unknown> => {
+			const stream = new AssistantMessageEventStream();
+			const message: AssistantMessage = {
+				role: "assistant",
+				api: "openai-completions",
+				provider: "openrouter",
+				model: "qwen/qwen3.8-flash",
+				content: [],
+				usage,
+				stopReason: "stop",
+				timestamp: 1_700_000_000_000,
+			};
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: message });
+				stream.push({ type: "done", reason: "stop", message });
+			});
+			const frames = parseSse(await collectStream(encodeStream(stream, "openrouter/qwen/qwen3.8-flash")));
+			const completed = frames.find(f => f.event === "response.completed")?.data as Record<string, unknown>;
+			return ((completed.response as Record<string, unknown>).usage as Record<string, unknown>).input_tokens_details;
+		};
+
+		expect(await details({ ...zeroUsage(), cacheWriteReported: true })).toEqual({
+			cached_tokens: 0,
+			cache_write_tokens: 0,
+		});
+		expect(await details({ ...zeroUsage(), cacheWrite: 7, cacheWriteReported: true })).toEqual({
+			cached_tokens: 0,
+			cache_write_tokens: 7,
+		});
+		expect(await details(zeroUsage())).toEqual({ cached_tokens: 0 });
+	});
+
 	it("reports the cache-write TTL split on response.completed usage only when known", async () => {
 		const completedUsage = async (usage: AssistantMessage["usage"]): Promise<Record<string, unknown>> => {
 			const stream = new AssistantMessageEventStream();

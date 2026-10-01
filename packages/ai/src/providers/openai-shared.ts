@@ -452,6 +452,7 @@ export interface OpenAIUsageAccounting {
 	cacheWrite: number;
 	totalTokens: number;
 	reasoningTokens?: number;
+	cacheWriteReported?: boolean;
 	orchestration?: Usage["orchestration"];
 }
 
@@ -472,6 +473,7 @@ export function calculateOpenAIUsageAccounting(accounting: OpenAIUsageAccounting
 		cacheWrite,
 		totalTokens: input + accounting.outputTokens + accounting.cachedTokens + cacheWrite,
 		...(accounting.reasoningTokens > 0 ? { reasoningTokens: accounting.reasoningTokens } : {}),
+		...(accounting.cacheWriteOpenRouter !== undefined ? { cacheWriteReported: true } : {}),
 	};
 }
 
