@@ -1,11 +1,14 @@
 import { describe, expect, it } from "bun:test";
+import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
 import { encodeResponse, encodeStream, parseRequest } from "@oh-my-pi/pi-ai/providers/openai-chat-server";
 import type {
 	AssistantMessage,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
+	Model,
 	ToolCall,
 } from "@oh-my-pi/pi-ai/types";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
 function makeEventStream(events: AssistantMessageEvent[], final: AssistantMessage): AssistantMessageEventStream {
 	async function* iter() {
@@ -474,6 +477,85 @@ describe("auth-gateway openai-chat: encodeStream", () => {
 				],
 			}),
 		);
+	});
+
+	it("round-trips signed Anthropic thinking so a tool-loop follow-up replays it signed", async () => {
+		const thinking = "The user wants the files; call ls.";
+		const signature = "EqQBCkYIBxgCKkDsig";
+		const toolCall: ToolCall = { type: "toolCall", id: "toolu_01", name: "ls", arguments: {} };
+		const partial: AssistantMessage = {
+			...emptyAssistant(),
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-haiku-4-5",
+			content: [{ type: "thinking", thinking, thinkingSignature: signature }, toolCall],
+		};
+		const events: AssistantMessageEvent[] = [
+			{ type: "thinking_start", contentIndex: 0, partial },
+			{ type: "thinking_delta", contentIndex: 0, delta: thinking, partial },
+			{ type: "thinking_end", contentIndex: 0, content: thinking, partial },
+			{ type: "toolcall_start", contentIndex: 1, partial },
+			{ type: "toolcall_delta", contentIndex: 1, delta: "{}", partial },
+			{ type: "toolcall_end", contentIndex: 1, toolCall, partial },
+			{ type: "done", reason: "toolUse", message: { ...partial, stopReason: "toolUse" } },
+		];
+		const chunks = (
+			await collectStream(encodeStream(makeEventStream(events, partial), "anthropic/claude-haiku-4-5"))
+		).map(parseSseLine) as Array<{ choices?: Array<{ delta: Record<string, unknown> }> }>;
+		// A Pi-style client keeps `reasoning_details` and replays them in place
+		// of the unsigned `reasoning_content`.
+		const reasoningDetails = chunks.flatMap(chunk => {
+			const details = chunk.choices?.[0]?.delta.reasoning_details;
+			return Array.isArray(details) ? details : [];
+		});
+
+		const parsed = parseRequest({
+			model: "anthropic/claude-haiku-4-5",
+			messages: [
+				{ role: "user", content: "list files" },
+				{
+					role: "assistant",
+					content: null,
+					reasoning_details: reasoningDetails,
+					tool_calls: [{ id: "toolu_01", type: "function", function: { name: "ls", arguments: "{}" } }],
+				},
+				{ role: "tool", tool_call_id: "toolu_01", content: "a.txt" },
+			],
+		});
+		const model: Model<"anthropic-messages"> = buildModel({
+			api: "anthropic-messages",
+			provider: "anthropic",
+			id: "claude-haiku-4-5",
+			name: "Claude Haiku 4.5",
+			baseUrl: "https://api.anthropic.com",
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			maxTokens: 64_000,
+			contextWindow: 200_000,
+			reasoning: true,
+		});
+		let body: { thinking?: { type: string }; messages?: Array<{ role: string; content: unknown }> } | undefined;
+		const fetchMock = (async (_input: string | URL | Request, init?: RequestInit) => {
+			body = JSON.parse(String(init?.body ?? "{}"));
+			return new Response(
+				JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "captured" } }),
+				{ status: 400, headers: { "Content-Type": "application/json" } },
+			);
+		}) as typeof fetch;
+		await streamAnthropic(model, parsed.context, {
+			apiKey: "sk-ant-api-test",
+			fetch: fetchMock,
+			thinkingEnabled: true,
+			thinkingBudgetTokens: 2048,
+		})
+			.result()
+			.catch(() => undefined);
+
+		// Anthropic only keeps thinking on across a tool loop (and the prompt
+		// cache warm) when the prior turn opens with its signed thinking block.
+		expect(body?.thinking?.type).toBe("enabled");
+		const assistant = body?.messages?.find(message => message.role === "assistant");
+		expect((assistant?.content as unknown[] | undefined)?.[0]).toEqual({ type: "thinking", thinking, signature });
 	});
 
 	it("emits an error envelope when the stream errors", async () => {

@@ -370,7 +370,7 @@ const REASONING_EFFORT_BY_WIRE: Partial<Record<string, Effort>> = {
  * A prefix naming another provider is left intact: it describes a different
  * route, so removing it would invent history rather than recover it.
  */
-function stampedAssistantModelId(wireModelId: string, provider: string): string {
+export function stampedAssistantModelId(wireModelId: string, provider: string): string {
 	const prefix = `${provider}/`;
 	return wireModelId.startsWith(prefix) ? wireModelId.slice(prefix.length) : wireModelId;
 }
