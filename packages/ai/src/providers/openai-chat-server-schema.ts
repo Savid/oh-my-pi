@@ -140,6 +140,9 @@ export const assistantMessageSchema = type({
 	// continuations replay the model's actual reasoning instead of a
 	// synthesized placeholder.
 	"reasoning_content?": "string | null",
+	// OpenRouter-style structured reasoning. The gateway emits Anthropic thinking
+	// here with its signature; entries are validated where they are read.
+	"reasoning_details?": "unknown[] | null",
 });
 
 export const toolMessageSchema = type({
