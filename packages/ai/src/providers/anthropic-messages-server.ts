@@ -88,8 +88,11 @@ function describeUnknownBlock(block: { type: string }): string {
 function buildSystemPrompt(raw: AnthropicSystem): string[] | undefined {
 	if (raw === undefined) return undefined;
 	if (typeof raw === "string") return raw.length > 0 ? [raw] : undefined;
+	// Keep each system block separate: upstreams treat a block that starts with
+	// `x-anthropic-billing-header:` as billing metadata, so merging it with the
+	// prompt that follows would drop the prompt.
 	const parts = raw.map(block => block.text).filter(text => text.length > 0);
-	return parts.length > 0 ? [parts.join("\n\n")] : undefined;
+	return parts.length > 0 ? parts : undefined;
 }
 
 function makeUserMessage(parts: (TextContent | ImageContentPart)[], timestamp: number): UserMessage {

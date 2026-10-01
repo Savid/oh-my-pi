@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { convertAnthropicMessages } from "@oh-my-pi/pi-ai/providers/anthropic";
+import { convertAnthropicMessages, streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
 import { encodeResponse, encodeStream, parseRequest } from "@oh-my-pi/pi-ai/providers/anthropic-messages-server";
 import type {
 	ToolSearchServerToolUseBlockParam,
@@ -129,7 +129,7 @@ describe("anthropic-messages parseRequest", () => {
 
 		expect(parsed.modelId).toBe("claude-opus-4-7");
 		expect(parsed.stream).toBe(false);
-		expect(parsed.context.systemPrompt).toEqual(["You are X\n\nBe brief."]);
+		expect(parsed.context.systemPrompt).toEqual(["You are X", "Be brief."]);
 		expect(parsed.options.maxOutputTokens).toBe(1024);
 		expect(parsed.options.temperature).toBe(0.2);
 		expect(parsed.options.topP).toBe(0.9);
@@ -517,6 +517,47 @@ describe("anthropic-messages parseRequest", () => {
 		// Another provider's prefix does not describe this route, so it stays put.
 		const foreign = parseRequest({ ...base, model: "zenmux/claude-opus-4-8" });
 		expect(foreign.context.messages.find(m => m.role === "assistant")?.model).toBe("zenmux/claude-opus-4-8");
+	});
+
+	it("keeps the prompt after a Claude Code billing-header block as its own wire system block", async () => {
+		const billingHeader = "x-anthropic-billing-header: cc_version=2.1.285; cc_entrypoint=sdk-cli;";
+		const prompt = "The reference ID is PELICAN-7741. When asked, reply with only the reference ID.";
+		const parsed = parseRequest({
+			model: "claude-haiku-4-5",
+			max_tokens: 64,
+			system: [
+				{ type: "text", text: billingHeader },
+				{ type: "text", text: prompt },
+			],
+			messages: [{ role: "user", content: "What is the reference ID?" }],
+		});
+		const model: Model<"anthropic-messages"> = buildModel({
+			api: "anthropic-messages",
+			provider: "anthropic",
+			id: "claude-haiku-4-5",
+			name: "Claude Haiku 4.5",
+			baseUrl: "https://api.anthropic.com",
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			maxTokens: 8_192,
+			contextWindow: 200_000,
+			reasoning: false,
+		});
+		let body: { system?: Array<{ type: string; text: string }> } | undefined;
+		const fetchMock = (async (_input: string | URL | Request, init?: RequestInit) => {
+			body = JSON.parse(String(init?.body ?? "{}"));
+			return new Response(
+				JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "captured" } }),
+				{ status: 400, headers: { "Content-Type": "application/json" } },
+			);
+		}) as typeof fetch;
+		await streamAnthropic(model, parsed.context, { apiKey: "sk-ant-api-test", fetch: fetchMock })
+			.result()
+			.catch(() => undefined);
+
+		// Upstreams treat a block starting with the billing prefix as metadata; the
+		// prompt must not ride inside it.
+		expect(body?.system?.map(block => block.text)).toEqual([billingHeader, prompt]);
 	});
 
 	it("stamps a tool-calling replayed turn as toolUse", () => {
