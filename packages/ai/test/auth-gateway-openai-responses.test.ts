@@ -830,10 +830,31 @@ describe("openai-responses encodeResponse", () => {
 
 		expect(body.usage).toEqual({
 			input_tokens: 20,
-			input_tokens_details: { cached_tokens: 4 },
+			input_tokens_details: { cached_tokens: 4, cache_write_tokens: 6 },
 			output_tokens: 20,
 			output_tokens_details: { reasoning_tokens: 5 },
 			total_tokens: 40,
+		});
+	});
+
+	it("omits cache_write_tokens when the turn wrote nothing to the cache", () => {
+		const message: AssistantMessage = {
+			role: "assistant",
+			api: "openai-responses",
+			provider: "openai",
+			model: "gpt-5",
+			content: [{ type: "text", text: "ok" }],
+			usage: { ...zeroUsage(), input: 10, output: 20, cacheRead: 4 },
+			stopReason: "stop",
+			timestamp: 1_700_000_000_000,
+		};
+
+		expect(encodeResponse(message, "gpt-5-requested").usage).toEqual({
+			input_tokens: 14,
+			input_tokens_details: { cached_tokens: 4 },
+			output_tokens: 20,
+			output_tokens_details: { reasoning_tokens: 0 },
+			total_tokens: 34,
 		});
 	});
 

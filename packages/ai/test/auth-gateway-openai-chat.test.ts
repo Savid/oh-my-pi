@@ -331,9 +331,22 @@ describe("auth-gateway openai-chat: encodeResponse", () => {
 
 		expect(out.usage).toEqual({
 			prompt_tokens: 20,
-			prompt_tokens_details: { cached_tokens: 4 },
+			prompt_tokens_details: { cached_tokens: 4, cache_write_tokens: 6 },
 			completion_tokens: 20,
 			total_tokens: 40,
+		});
+	});
+
+	it("omits cache_write_tokens when the turn wrote nothing to the cache", () => {
+		const message: AssistantMessage = {
+			...emptyAssistant(),
+			usage: { ...baseUsage, input: 10, output: 20, cacheRead: 4, cacheWrite: 0, totalTokens: 34 },
+		};
+		expect(encodeResponse(message, "gpt-test").usage).toEqual({
+			prompt_tokens: 14,
+			prompt_tokens_details: { cached_tokens: 4 },
+			completion_tokens: 20,
+			total_tokens: 34,
 		});
 	});
 
