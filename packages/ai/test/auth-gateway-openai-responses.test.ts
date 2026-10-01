@@ -853,7 +853,6 @@ describe("openai-responses encodeResponse", () => {
 			input_tokens: 14,
 			input_tokens_details: { cached_tokens: 4 },
 			output_tokens: 20,
-			output_tokens_details: { reasoning_tokens: 0 },
 			total_tokens: 34,
 		});
 	});
@@ -900,11 +899,27 @@ describe("openai-responses encodeResponse", () => {
 			input_tokens: 1203,
 			input_tokens_details: { cached_tokens: 0, cache_write_tokens: 1200 },
 			output_tokens: 1,
-			output_tokens_details: { reasoning_tokens: 0 },
 			total_tokens: 1204,
 			cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1200 },
 		});
 		expect(encodeResponse({ ...message, usage: zeroUsage() }, "m").usage).not.toHaveProperty("cache_creation");
+	});
+
+	it("omits output_tokens_details when reasoning tokens are unknown", () => {
+		const message: AssistantMessage = {
+			role: "assistant",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-5-5",
+			content: [{ type: "text", text: "ok" }],
+			usage: { ...zeroUsage(), input: 10, output: 20 },
+			stopReason: "stop",
+			timestamp: 1_700_000_000_000,
+		};
+		expect(encodeResponse(message, "m").usage).not.toHaveProperty("output_tokens_details");
+		expect(encodeResponse({ ...message, usage: { ...message.usage, reasoningTokens: 0 } }, "m").usage).toMatchObject({
+			output_tokens_details: { reasoning_tokens: 0 },
+		});
 	});
 
 	it("encodes assistant message phase from text signatures", () => {
@@ -1072,7 +1087,6 @@ describe("openai-responses encodeStream", () => {
 			input_tokens: 63,
 			input_tokens_details: { cached_tokens: 0 },
 			output_tokens: 16,
-			output_tokens_details: { reasoning_tokens: 0 },
 			total_tokens: 79,
 			cost: 0.00001697,
 		});

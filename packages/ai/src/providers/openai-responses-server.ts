@@ -855,7 +855,8 @@ function buildUsage(message: AssistantMessage): Record<string, unknown> {
 			...(u.cacheWrite > 0 ? { cache_write_tokens: u.cacheWrite } : {}),
 		},
 		output_tokens: u.output,
-		output_tokens_details: { reasoning_tokens: u.reasoningTokens ?? 0 },
+		// Unknown reasoning stays absent rather than reading as zero.
+		...(u.reasoningTokens !== undefined ? { output_tokens_details: { reasoning_tokens: u.reasoningTokens } } : {}),
 		total_tokens: inputTokens + u.output,
 		// Anthropic's cache-write TTL split; both members come from one upstream object.
 		...(u.cttl
