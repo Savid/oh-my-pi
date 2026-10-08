@@ -1,10 +1,10 @@
 name: pi-ai release
 
-# Supervisoor's gateway installs @oh-my-pi/pi-ai from this release's tarball.
-# Tag pi-ai-v<packages/ai version>-supervisoor.<n> on the supervisoor branch.
+# Publishes this fork's @oh-my-pi/pi-ai as a release tarball that consumers
+# install by URL. Tag pi-ai-v<packages/ai version>-fork.<n>.
 on:
    push:
-      tags: ["pi-ai-v*-supervisoor.*"]
+      tags: ["pi-ai-v*-fork.*"]
 
 permissions:
    contents: write
@@ -25,10 +25,12 @@ jobs:
            run: |
               version=$(jq -r .version packages/ai/package.json)
               case "$TAG" in
-                 "pi-ai-v$version-supervisoor."*) ;;
+                 "pi-ai-v$version-fork."*) ;;
                  *) echo "tag $TAG does not match packages/ai version $version" >&2; exit 1 ;;
               esac
-              docker run --rm -v "$PWD:/w" -w /w/packages/ai "$BUN_IMAGE" bun pm pack --destination /w/dist
+              mkdir dist
+              docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/w" -w /w/packages/ai "$BUN_IMAGE" \
+                 bun pm pack --destination /w/dist
               (cd dist && sha256sum ./*.tgz > SHA256SUMS)
               gh release create "$TAG" dist/*.tgz dist/SHA256SUMS --title "$TAG" \
-                 --notes "@oh-my-pi/pi-ai $version with Supervisoor's gateway changes ($GITHUB_SHA)."
+                 --notes "@oh-my-pi/pi-ai $version from $GITHUB_SHA."
