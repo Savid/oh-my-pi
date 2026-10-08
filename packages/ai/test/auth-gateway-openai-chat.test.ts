@@ -331,7 +331,8 @@ describe("auth-gateway openai-chat: encodeResponse", () => {
 
 		expect(out.usage).toEqual({
 			prompt_tokens: 20,
-			prompt_tokens_details: { cached_tokens: 4 },
+			// Cache writes are reported whenever the upstream reported one.
+			prompt_tokens_details: { cached_tokens: 4, cache_write_tokens: 6 },
 			completion_tokens: 20,
 			total_tokens: 40,
 		});

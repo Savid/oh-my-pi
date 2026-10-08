@@ -830,7 +830,8 @@ describe("openai-responses encodeResponse", () => {
 
 		expect(body.usage).toEqual({
 			input_tokens: 20,
-			input_tokens_details: { cached_tokens: 4 },
+			// Cache writes are reported whenever the upstream reported one.
+			input_tokens_details: { cached_tokens: 4, cache_write_tokens: 6 },
 			output_tokens: 20,
 			output_tokens_details: { reasoning_tokens: 5 },
 			total_tokens: 40,

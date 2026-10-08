@@ -129,7 +129,9 @@ describe("anthropic-messages parseRequest", () => {
 
 		expect(parsed.modelId).toBe("claude-opus-4-7");
 		expect(parsed.stream).toBe(false);
-		expect(parsed.context.systemPrompt).toEqual(["You are X\n\nBe brief."]);
+		// Blocks stay separate: upstreams read a block starting with
+		// `x-anthropic-billing-header:` as metadata, so merging would drop the prompt.
+		expect(parsed.context.systemPrompt).toEqual(["You are X", "Be brief."]);
 		expect(parsed.options.maxOutputTokens).toBe(1024);
 		expect(parsed.options.temperature).toBe(0.2);
 		expect(parsed.options.topP).toBe(0.9);

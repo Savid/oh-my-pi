@@ -6,7 +6,5 @@ export function getOpenRouterHeaders(): Record<string, string> {
 		"HTTP-Referer": APP_URL,
 		"X-OpenRouter-Title": APP_NAME,
 		"X-OpenRouter-Categories": "cli-agent",
-		"X-OpenRouter-Cache": "true",
-		"X-OpenRouter-Cache-TTL": "3600",
 	};
 }

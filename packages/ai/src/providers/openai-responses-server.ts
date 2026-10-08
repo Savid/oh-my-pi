@@ -43,7 +43,12 @@ import {
 	type OpenAIResponsesTool,
 	openaiResponsesRequestSchema,
 } from "./openai-responses-server-schema";
-import { coerceNullMessageContentInPlace, encodeTextSignatureV1, parseTextSignature } from "./openai-shared";
+import {
+	catalogCostEstimate,
+	coerceNullMessageContentInPlace,
+	encodeTextSignatureV1,
+	parseTextSignature,
+} from "./openai-shared";
 
 export type { ParsedRequest };
 
@@ -847,12 +852,32 @@ function buildOutputItems(message: AssistantMessage): OutputItem[] {
 function buildUsage(message: AssistantMessage): Record<string, unknown> {
 	const u = message.usage;
 	const inputTokens = u.input + u.cacheRead + u.cacheWrite;
+	const estimate = catalogCostEstimate(u);
 	return {
 		input_tokens: inputTokens,
-		input_tokens_details: { cached_tokens: u.cacheRead },
+		input_tokens_details: {
+			cached_tokens: u.cacheRead,
+			// OpenRouter's field name for input tokens written to the cache; a reported
+			// zero is sent, an unreported count is left out.
+			...(u.cacheWriteReported || u.cacheWrite > 0 ? { cache_write_tokens: u.cacheWrite } : {}),
+		},
 		output_tokens: u.output,
-		output_tokens_details: { reasoning_tokens: u.reasoningTokens ?? 0 },
+		// Unknown reasoning stays absent rather than reading as zero.
+		...(u.reasoningTokens !== undefined ? { output_tokens_details: { reasoning_tokens: u.reasoningTokens } } : {}),
 		total_tokens: inputTokens + u.output,
+		// Anthropic's cache-write TTL split; both members come from one upstream object.
+		...(u.cttl
+			? {
+					cache_creation: {
+						ephemeral_5m_input_tokens: u.cttl.ephemeral5m ?? 0,
+						ephemeral_1h_input_tokens: u.cttl.ephemeral1h ?? 0,
+					},
+				}
+			: {}),
+		// OpenRouter's field for the USD charge, sent only when the upstream reported one.
+		...(u.reportedCost !== undefined ? { cost: u.reportedCost } : {}),
+		// The gateway's catalog price, sent only when no upstream charge was reported.
+		...(estimate !== undefined ? { estimated_cost: estimate } : {}),
 	};
 }
 
