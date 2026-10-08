@@ -438,7 +438,8 @@ export function applyProviderReportedCost(model: Pick<Model, "provider">, usage:
 	// carries the provider spend. Both are real charges, so add them (verified
 	// live 2026-10-02: openrouter/openai/gpt-6.1-sol returned `cost: 0,
 	// is_byok: true, cost_details.upstream_inference_cost: 6.6e-05`).
-	if (Reflect.get(rawUsage, "is_byok") === true) {
+	let byokFeeOnly = Reflect.get(rawUsage, "is_byok") === true;
+	if (byokFeeOnly) {
 		const details = Reflect.get(rawUsage, "cost_details");
 		const upstreamCost =
 			typeof details === "object" && details !== null ? Reflect.get(details, "upstream_inference_cost") : undefined;
@@ -446,6 +447,7 @@ export function applyProviderReportedCost(model: Pick<Model, "provider">, usage:
 			const creditsCharge =
 				typeof reportedCost === "number" && Number.isFinite(reportedCost) && reportedCost >= 0 ? reportedCost : 0;
 			reportedCost = creditsCharge + upstreamCost;
+			byokFeeOnly = false;
 		}
 	}
 	if (typeof reportedCost !== "number" || !Number.isFinite(reportedCost) || reportedCost < 0) return;
@@ -465,6 +467,16 @@ export function applyProviderReportedCost(model: Pick<Model, "provider">, usage:
 		usage.cost.cacheWrite = 0;
 	}
 	usage.cost.total = reportedCost;
+	// A BYOK fee without the upstream inference cost is neither the charge nor a catalog price.
+	if (byokFeeOnly) usage.byokFee = true;
+	else usage.reportedCost = reportedCost;
+}
+
+/** The catalog price of a call with no reported upstream charge, when the catalog prices it. */
+export function catalogCostEstimate(usage: Usage): number | undefined {
+	if (usage.reportedCost !== undefined || usage.byokFee) return undefined;
+	const total = usage.cost.total;
+	return Number.isFinite(total) && total > 0 ? total : undefined;
 }
 
 export interface OpenAIUsageAccountingInput {
@@ -484,6 +496,7 @@ export interface OpenAIUsageAccounting {
 	cacheWrite: number;
 	totalTokens: number;
 	reasoningTokens?: number;
+	cacheWriteReported?: boolean;
 	orchestration?: Usage["orchestration"];
 }
 
@@ -504,6 +517,7 @@ export function calculateOpenAIUsageAccounting(accounting: OpenAIUsageAccounting
 		cacheWrite,
 		totalTokens: input + accounting.outputTokens + accounting.cachedTokens + cacheWrite,
 		...(accounting.reasoningTokens > 0 ? { reasoningTokens: accounting.reasoningTokens } : {}),
+		...(accounting.cacheWriteOpenRouter !== undefined ? { cacheWriteReported: true } : {}),
 	};
 }
 

@@ -252,6 +252,21 @@ export interface Usage {
 		/** Final committed ACU cost, when reported. */
 		acuCost?: number;
 	};
+	/**
+	 * True when the provider reported a cache-write count, even zero. Lets the
+	 * gateway forward a reported 0 instead of omitting an unknown value.
+	 */
+	cacheWriteReported?: boolean;
+	/**
+	 * The upstream's own USD charge for this call (OpenRouter `usage.cost`, plus
+	 * `cost_details.upstream_inference_cost` for bring-your-own-key routes), when reported.
+	 */
+	reportedCost?: number;
+	/**
+	 * True when the upstream reported only a bring-your-own-key fee without the
+	 * inference cost: that is neither the charge nor a catalog price.
+	 */
+	byokFee?: boolean;
 	cost: {
 		input: number;
 		output: number;

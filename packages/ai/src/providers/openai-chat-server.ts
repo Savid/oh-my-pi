@@ -13,9 +13,11 @@ import type {
 	Context,
 	ImageContent,
 	Message,
+	RedactedThinkingContent,
 	ServiceTier,
 	StopReason,
 	TextContent,
+	ThinkingContent,
 	Tool,
 	ToolCall,
 	ToolResultMessage,
@@ -29,10 +31,21 @@ import {
 	type OpenAIChatToolChoice,
 	openaiChatRequestSchema,
 } from "./openai-chat-server-schema";
+import { stampedAssistantModelId } from "./anthropic-messages-server";
 import { decodeDataUri } from "./openai-data-uri";
-import { coerceNullMessageContentInPlace } from "./openai-shared";
+import { catalogCostEstimate, coerceNullMessageContentInPlace } from "./openai-shared";
 
 export type { ParsedRequest };
+
+/**
+ * OpenRouter's `reasoning_details` format tag for Anthropic thinking. Chat
+ * Completions has no native slot for a thinking signature, so the gateway
+ * emits Anthropic thinking as `reasoning_details` entries in this format and
+ * reads them back on replay.
+ */
+const ANTHROPIC_REASONING_FORMAT = "anthropic-claude-v1";
+
+type AnthropicReasoningBlock = ThinkingContent | RedactedThinkingContent;
 
 type ReasoningEffort = NonNullable<ParsedRequest["options"]["reasoning"]>;
 
@@ -136,6 +149,7 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 						(m.content ?? undefined) as string | OpenAIChatContentPart[] | undefined,
 						m.tool_calls,
 						(m as { reasoning_content?: string | null }).reasoning_content ?? undefined,
+						parseAnthropicReasoningDetails((m as { reasoning_details?: unknown[] | null }).reasoning_details),
 						data.model,
 						now,
 					),
@@ -259,15 +273,45 @@ function parseUserLikeContent(
 	return parts;
 }
 
+/**
+ * Signed Anthropic thinking replayed through `reasoning_details`. Entries in
+ * other formats, and unsigned text, are not Anthropic replay material.
+ */
+function parseAnthropicReasoningDetails(details: unknown[] | null | undefined): AnthropicReasoningBlock[] {
+	const blocks: AnthropicReasoningBlock[] = [];
+	for (const detail of details ?? []) {
+		if (typeof detail !== "object" || detail === null) continue;
+		const entry = detail as Record<string, unknown>;
+		if (entry.format !== ANTHROPIC_REASONING_FORMAT) continue;
+		if (
+			entry.type === "reasoning.text" &&
+			typeof entry.text === "string" &&
+			typeof entry.signature === "string" &&
+			entry.signature.length > 0
+		) {
+			blocks.push({ type: "thinking", thinking: entry.text, thinkingSignature: entry.signature });
+		} else if (entry.type === "reasoning.encrypted" && typeof entry.data === "string" && entry.data.length > 0) {
+			blocks.push({ type: "redactedThinking", data: entry.data });
+		}
+	}
+	return blocks;
+}
+
 function buildAssistantMessage(
 	content: string | OpenAIChatContentPart[] | undefined,
 	toolCalls: OpenAIChatToolCall[] | undefined,
 	reasoningContent: string | undefined,
+	anthropicReasoning: AnthropicReasoningBlock[],
 	modelId: string,
 	now: number,
 ): AssistantMessage {
 	const parts: AssistantMessage["content"] = [];
-	if (reasoningContent !== undefined && reasoningContent.length > 0) {
+	// Signed Anthropic thinking supersedes the unsigned reasoning channel: it
+	// carries the same text plus the signature Anthropic needs to replay it.
+	const anthropicReplay = anthropicReasoning.length > 0;
+	if (anthropicReplay) {
+		parts.push(...anthropicReasoning);
+	} else if (reasoningContent !== undefined && reasoningContent.length > 0) {
 		// Replayed reasoning channel. The signature names the wire field so
 		// completions providers that demand exact `reasoning_content` replay
 		// (DeepSeek/Kimi) echo the model's actual reasoning back verbatim.
@@ -296,7 +340,7 @@ function buildAssistantMessage(
 			parts.push(call);
 		}
 	}
-	return {
+	const message: AssistantMessage = {
 		role: "assistant",
 		content: parts,
 		api: "openai-completions",
@@ -312,6 +356,18 @@ function buildAssistantMessage(
 		},
 		stopReason: "stop",
 		timestamp: now,
+	};
+	if (!anthropicReplay) return message;
+	// Label the turn as Anthropic's own, as the Messages route does, so the
+	// thinking replays signed and thinking stays on across a tool loop. Tool
+	// calls answered by tool results did request execution; "stop" would read
+	// as an abandoned tool-use turn and strip the signatures.
+	return {
+		...message,
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: stampedAssistantModelId(modelId, "anthropic"),
+		stopReason: parts.some(part => part.type === "toolCall") ? "toolUse" : "stop",
 	};
 }
 
@@ -427,6 +483,8 @@ export function encodeResponse(message: AssistantMessage, requestedModelId: stri
 		// DeepSeek-style / o-series reasoning channel.
 		responseMessage.reasoning_content = reasoning;
 	}
+	const reasoningDetails = anthropicReasoningDetails(message);
+	if (reasoningDetails.length > 0) responseMessage.reasoning_details = reasoningDetails;
 	if (toolCalls.length > 0) {
 		responseMessage.tool_calls = toolCalls.map(tc => ({
 			id: tc.id,
@@ -461,11 +519,30 @@ function buildUsage(message: AssistantMessage): Record<string, unknown> {
 		prompt_tokens: promptTokens,
 		completion_tokens: message.usage.output,
 		total_tokens: promptTokens + message.usage.output,
-		prompt_tokens_details: { cached_tokens: message.usage.cacheRead },
+		prompt_tokens_details: {
+			cached_tokens: message.usage.cacheRead,
+			// OpenRouter's field name for prompt tokens written to the cache; a reported
+			// zero is sent, an unreported count is left out.
+			...(message.usage.cacheWriteReported || message.usage.cacheWrite > 0
+				? { cache_write_tokens: message.usage.cacheWrite }
+				: {}),
+		},
 	};
 	if (message.usage.reasoningTokens !== undefined) {
 		usage.completion_tokens_details = { reasoning_tokens: message.usage.reasoningTokens };
 	}
+	// Anthropic's cache-write TTL split; both members come from one upstream object.
+	if (message.usage.cttl) {
+		usage.cache_creation = {
+			ephemeral_5m_input_tokens: message.usage.cttl.ephemeral5m ?? 0,
+			ephemeral_1h_input_tokens: message.usage.cttl.ephemeral1h ?? 0,
+		};
+	}
+	// OpenRouter's field for the USD charge, sent only when the upstream reported one.
+	if (message.usage.reportedCost !== undefined) usage.cost = message.usage.reportedCost;
+	// The gateway's catalog price, sent only when no upstream charge was reported.
+	const estimate = catalogCostEstimate(message.usage);
+	if (estimate !== undefined) usage.estimated_cost = estimate;
 	return usage;
 }
 
@@ -496,6 +573,34 @@ function flattenAssistant(message: AssistantMessage): {
 		}
 	}
 	return { text, reasoning, toolCalls };
+}
+
+/**
+ * Anthropic thinking as OpenRouter-style `reasoning_details`, one entry per
+ * block, so clients that keep these entries can replay the signatures.
+ */
+function anthropicReasoningDetails(message: AssistantMessage): Record<string, unknown>[] {
+	if (message.api !== "anthropic-messages") return [];
+	const details: Record<string, unknown>[] = [];
+	for (const part of message.content) {
+		if (part.type === "thinking" && part.thinkingSignature) {
+			details.push({
+				type: "reasoning.text",
+				text: part.thinking,
+				signature: part.thinkingSignature,
+				format: ANTHROPIC_REASONING_FORMAT,
+				index: details.length,
+			});
+		} else if (part.type === "redactedThinking") {
+			details.push({
+				type: "reasoning.encrypted",
+				data: part.data,
+				format: ANTHROPIC_REASONING_FORMAT,
+				index: details.length,
+			});
+		}
+	}
+	return details;
 }
 
 function isOnlyRaw(args: Record<string, unknown>): boolean {
@@ -691,7 +796,7 @@ export function encodeStream(
 							break;
 						}
 
-						case "done":
+						case "done": {
 							finishReason =
 								event.reason === "toolUse"
 									? "tool_calls"
@@ -700,11 +805,18 @@ export function encodeStream(
 										: hasToolCalls
 											? "tool_calls"
 											: "stop";
+							// Signatures settle at the end of each block; send them once,
+							// ahead of the finish chunk, for the client to replay.
+							const reasoningDetails = anthropicReasoningDetails(event.message);
+							if (reasoningDetails.length > 0) {
+								writeSse(controller, baseChunk({ reasoning_details: reasoningDetails }, null));
+							}
 							writeSse(controller, baseChunk({}, finishReason));
 							if (includeUsage) writeUsage(controller, event.message);
 							controller.enqueue(encoder.encode("data: [DONE]\n\n"));
 							controller.close();
 							return;
+						}
 
 						case "error": {
 							const msg = event.error.errorMessage ?? "stream error";

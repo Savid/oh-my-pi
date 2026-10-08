@@ -31,6 +31,7 @@ import {
 	anthropicMessagesRequestSchema,
 } from "./anthropic-messages-server-schema";
 import { isAnthropicServerToolHistoryBlock, THINKING_BINDING_CONTROLS_BETA } from "./anthropic-wire";
+import { catalogCostEstimate } from "./openai-shared";
 
 /**
  * Anthropic Messages API (https://docs.anthropic.com/en/api/messages) ↔ pi-ai
@@ -88,8 +89,11 @@ function describeUnknownBlock(block: { type: string }): string {
 function buildSystemPrompt(raw: AnthropicSystem): string[] | undefined {
 	if (raw === undefined) return undefined;
 	if (typeof raw === "string") return raw.length > 0 ? [raw] : undefined;
+	// Keep each system block separate: upstreams treat a block that starts with
+	// `x-anthropic-billing-header:` as billing metadata, so merging it with the
+	// prompt that follows would drop the prompt.
 	const parts = raw.map(block => block.text).filter(text => text.length > 0);
-	return parts.length > 0 ? [parts.join("\n\n")] : undefined;
+	return parts.length > 0 ? parts : undefined;
 }
 
 function makeUserMessage(parts: (TextContent | ImageContentPart)[], timestamp: number): UserMessage {
@@ -367,7 +371,7 @@ const REASONING_EFFORT_BY_WIRE: Partial<Record<string, Effort>> = {
  * A prefix naming another provider is left intact: it describes a different
  * route, so removing it would invent history rather than recover it.
  */
-function stampedAssistantModelId(wireModelId: string, provider: string): string {
+export function stampedAssistantModelId(wireModelId: string, provider: string): string {
 	const prefix = `${provider}/`;
 	return wireModelId.startsWith(prefix) ? wireModelId.slice(prefix.length) : wireModelId;
 }
@@ -569,11 +573,25 @@ function encodeContentBlocks(message: AssistantMessage): Record<string, unknown>
 }
 
 function encodeUsage(message: AssistantMessage): Record<string, unknown> {
+	const estimate = catalogCostEstimate(message.usage);
 	return {
 		input_tokens: message.usage.input,
 		output_tokens: message.usage.output,
 		cache_read_input_tokens: message.usage.cacheRead,
 		cache_creation_input_tokens: message.usage.cacheWrite,
+		// Anthropic's cache-write TTL split; both members come from one upstream object.
+		...(message.usage.cttl
+			? {
+					cache_creation: {
+						ephemeral_5m_input_tokens: message.usage.cttl.ephemeral5m ?? 0,
+						ephemeral_1h_input_tokens: message.usage.cttl.ephemeral1h ?? 0,
+					},
+				}
+			: {}),
+		// OpenRouter's field for the USD charge, sent only when the upstream reported one.
+		...(message.usage.reportedCost !== undefined ? { cost: message.usage.reportedCost } : {}),
+		// The gateway's catalog price, sent only when no upstream charge was reported.
+		...(estimate !== undefined ? { estimated_cost: estimate } : {}),
 	};
 }
 
