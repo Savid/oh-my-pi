@@ -1,0 +1,39 @@
+name: Gateway image
+
+# Supervisoor's OMP auth broker/gateway image (gateway/Dockerfile), published
+# publicly as docker.io/savid/oh-my-pi from the supervisoor branch.
+on:
+   push:
+      branches: [supervisoor]
+      paths:
+         - "gateway/**"
+         - "packages/ai/src/**"
+         - ".github/workflows/gateway-image.yml"
+   workflow_dispatch:
+
+concurrency:
+   group: gateway-image
+   cancel-in-progress: false
+
+permissions:
+   contents: read
+
+jobs:
+   publish:
+      runs-on: ubuntu-24.04
+      timeout-minutes: 20
+      steps:
+         - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+           with:
+              persist-credentials: false
+         - name: Build and push
+           env:
+              IMAGE: docker.io/savid/oh-my-pi
+              DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+              DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+           run: |
+              printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+              docker build -f gateway/Dockerfile -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:latest" .
+              docker push "$IMAGE:$GITHUB_SHA"
+              docker push "$IMAGE:latest"
+              docker logout docker.io
