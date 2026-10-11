@@ -1107,6 +1107,14 @@ export function transformMessages<TApi extends Api>(
 					if (carriesSameModelReasoning && sanitized.summary === false) {
 						return { type: "thinking" as const, thinking: sanitized.thinking, [kCarriedReasoning]: true };
 					}
+					// Codex targets drop it instead. Codex replays only its own
+					// encrypted reasoning items, which the same-model path above keeps,
+					// and a native Codex client never sends prior reasoning back as
+					// text. Auth-gateway clients echo back the reasoning summaries the
+					// gateway streamed them (chat `reasoning_content`, Responses
+					// `reasoning` items); demoted, every replayed turn would show the
+					// model its own summaries as `<think>`-tagged `output_text`.
+					if (model.api === "openai-codex-responses") return [];
 					// Other cross-API targets (openai-responses encrypted blobs, google
 					// thought parts, anthropic-target from a non-Anthropic source, or any
 					// reasoning-disabled target) can't replay an unsigned thinking block:
