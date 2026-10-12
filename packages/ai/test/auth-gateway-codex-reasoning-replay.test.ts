@@ -1,13 +1,26 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { parseRequest as parseMessagesRequest } from "@oh-my-pi/pi-ai/providers/anthropic-messages-server";
 import { parseRequest } from "@oh-my-pi/pi-ai/providers/openai-chat-server";
-import { convertCodexResponsesMessages } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
+import {
+	buildTransformedCodexRequestBody,
+	convertCodexResponsesMessages,
+	streamOpenAICodexResponses,
+} from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { encodeStream, parseRequest as parseResponsesRequest } from "@oh-my-pi/pi-ai/providers/openai-responses-server";
 import type { ResponseInput } from "@oh-my-pi/pi-ai/providers/openai-responses-wire";
 import { transformMessages } from "@oh-my-pi/pi-ai/providers/transform-messages";
-import type { Api, AssistantMessage, Context, Model, ModelSpec } from "@oh-my-pi/pi-ai/types";
+import type {
+	Api,
+	AssistantMessage,
+	Context,
+	FetchImpl,
+	Model,
+	ModelSpec,
+	ProviderSessionState,
+} from "@oh-my-pi/pi-ai/types";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import * as piUtils from "@oh-my-pi/pi-utils";
 import { createCodexModel } from "./helpers";
 
 /**
@@ -281,5 +294,257 @@ describe("auth-gateway replay of streamed reasoning to Anthropic", () => {
 
 		expect(JSON.stringify(blocks)).not.toContain(ROUTE_SUMMARY);
 		expect(blocks.map(block => block.type)).toEqual(["toolCall"]);
+	});
+});
+
+/** Every item Codex receives for `context`, as `type` (and `:role` for messages); item ids, if any, follow `#`. */
+async function codexWire(context: Context, model = createCodexModel("gpt-6-luna")): Promise<string[]> {
+	const body = await buildTransformedCodexRequestBody(model, context, undefined);
+	return (body.input ?? []).map(item => {
+		const type = item.type ?? "message";
+		const role = type === "message" ? `:${item.role}` : "";
+		return `${type}${role}${item.id ? `#${item.id}` : ""}`;
+	});
+}
+
+function responsesUser(text: string) {
+	return { type: "message", role: "user", content: [{ type: "input_text", text }] };
+}
+
+describe("Codex reasoning reaches the wire only with the item it led to", () => {
+	it("sends a Codex client's reasoning, commentary and call as one turn", async () => {
+		const { context } = parseResponsesRequest({
+			model: "openai-codex/gpt-6-luna",
+			input: [
+				responsesUser("Find the stairs."),
+				CODEX_REASONING_ITEM,
+				{
+					type: "message",
+					role: "assistant",
+					id: "msg_own",
+					phase: "commentary",
+					content: [{ type: "output_text", text: "Looking around." }],
+				},
+				{ type: "function_call", id: "fc_own", call_id: "call_move", name: "nh", arguments: '{"cmd":"l"}' },
+				{ type: "function_call_output", call_id: "call_move", output: "A staircase." },
+			],
+		});
+
+		expect(context.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
+		expect(await codexWire(context)).toEqual([
+			"message:user",
+			"reasoning",
+			"message:assistant",
+			"function_call",
+			"function_call_output",
+		]);
+	});
+
+	it("sends a Codex client's reasoning with the final answer it led to", async () => {
+		const { context } = parseResponsesRequest({
+			model: "openai-codex/gpt-6-luna",
+			input: [
+				responsesUser("Hi."),
+				CODEX_REASONING_ITEM,
+				{
+					type: "message",
+					role: "assistant",
+					id: "msg_own",
+					phase: "final_answer",
+					content: [{ type: "output_text", text: "Hello." }],
+				},
+				responsesUser("Next."),
+			],
+		});
+
+		expect(await codexWire(context)).toEqual(["message:user", "reasoning", "message:assistant", "message:user"]);
+	});
+
+	it("leaves out a Codex client's reasoning whose call never reached it", async () => {
+		const { context } = parseResponsesRequest({
+			model: "openai-codex/gpt-6-luna",
+			input: [responsesUser("Find the stairs."), CODEX_REASONING_ITEM, responsesUser("Continue.")],
+		});
+
+		expect(await codexWire(context)).toEqual(["message:user", "message:user"]);
+	});
+
+	it("leaves out a Claude client's thinking whose tool_use never reached it", async () => {
+		const { context } = parseMessagesRequest({
+			model: "openai-codex/gpt-6-luna",
+			max_tokens: 1_000,
+			messages: [
+				{ role: "user", content: "Find the stairs." },
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: ROUTE_SUMMARY, signature: JSON.stringify(CODEX_REASONING_ITEM) },
+					],
+				},
+				{ role: "user", content: "Continue." },
+			],
+		});
+
+		expect(await codexWire(context)).toEqual(["message:user", "message:user"]);
+	});
+
+	it("drops a cut thinking-only turn and keeps a later turn's reasoning", async () => {
+		const later = { ...CODEX_REASONING_ITEM, id: "rs_later", encrypted_content: "later-encrypted-reasoning" };
+		const { context } = parseMessagesRequest({
+			model: "openai-codex/gpt-6-luna",
+			max_tokens: 1_000,
+			messages: [
+				{ role: "user", content: "Find the stairs." },
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: ROUTE_SUMMARY, signature: JSON.stringify(CODEX_REASONING_ITEM) },
+					],
+				},
+				{ role: "user", content: "Continue." },
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: MAP_SUMMARY, signature: JSON.stringify(later) },
+						{ type: "tool_use", id: "toolu_move", name: "nh", input: { cmd: "l" } },
+					],
+				},
+				{ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_move", content: "A staircase." }] },
+			],
+		});
+		const body = await buildTransformedCodexRequestBody(createCodexModel("gpt-6-luna"), context, undefined);
+
+		expect(await codexWire(context)).toEqual([
+			"message:user",
+			"message:user",
+			"reasoning",
+			"function_call",
+			"function_call_output",
+		]);
+		expect(encryptedReasoning((body.input ?? []) as ResponseInput)).toEqual(["later-encrypted-reasoning"]);
+	});
+});
+
+const COMPLETED_SSE = `${[
+	{ type: "response.output_text.delta", delta: "Down we go." },
+	{
+		type: "response.completed",
+		response: {
+			status: "completed",
+			usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8, input_tokens_details: { cached_tokens: 0 } },
+		},
+	},
+]
+	.map(event => `data: ${JSON.stringify(event)}`)
+	.join("\n\n")}\n\n`;
+
+function codexToken(accountId: string): string {
+	const claims = { "https://api.openai.com/auth": { chatgpt_account_id: accountId } };
+	return `aaa.${Buffer.from(JSON.stringify(claims), "utf8").toBase64()}.bbb`;
+}
+
+function requestInput(body: RequestInit["body"]): Record<string, unknown>[] {
+	const text = typeof body === "string" ? body : new TextDecoder().decode(Bun.zstdDecompressSync(body as Uint8Array));
+	return (JSON.parse(text) as { input: Record<string, unknown>[] }).input;
+}
+
+/**
+ * A Codex account that refuses every request replaying {@link ENCRYPTED} (minted for another
+ * account) with `refusal`, and records the reasoning each request carried.
+ */
+function codexBackend(refusal: () => Response, sentReasoning: unknown[][]): FetchImpl {
+	return (async (input: string | URL, init?: RequestInit) => {
+		if (!String(input).endsWith("/responses")) return new Response("not found", { status: 404 });
+		const encrypted = requestInput(init?.body)
+			.filter(item => item.type === "reasoning")
+			.map(item => item.encrypted_content);
+		sentReasoning.push(encrypted);
+		if (encrypted.includes(ENCRYPTED)) return refusal();
+		return new Response(COMPLETED_SSE, { headers: { "content-type": "text/event-stream" } });
+	}) as FetchImpl;
+}
+
+/** A Codex client's next request on gpt-6.1-sol, replaying a turn whose reasoning another account or model minted. */
+function sessionContext(extra: unknown[] = []): Context {
+	return parseResponsesRequest({
+		model: "openai-codex/gpt-6.1-sol",
+		input: [
+			responsesUser("Find the stairs."),
+			CODEX_REASONING_ITEM,
+			{ type: "function_call", call_id: "call_move", name: "nh", arguments: '{"cmd":"l"}' },
+			{ type: "function_call_output", call_id: "call_move", output: "A staircase." },
+			...extra,
+			responsesUser("Descend."),
+		],
+	} as never).context;
+}
+
+describe("Codex rejecting replayed reasoning", () => {
+	const model = createCodexModel("gpt-6.1-sol", { preferWebsockets: false });
+
+	beforeEach(() => {
+		vi.spyOn(piUtils, "getInstallId").mockReturnValue("00000000-0000-4000-8000-000000000001");
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("retries once without the reasoning and leaves it out for the rest of the session", async () => {
+		const sent: unknown[][] = [];
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const rejection = () =>
+			Response.json(
+				{
+					error: {
+						message: "The encrypted content for item rs_own could not be verified.",
+						type: "invalid_request_error",
+						param: null,
+						code: "invalid_encrypted_content",
+					},
+				},
+				{ status: 400 },
+			);
+		const run = (context: Context) =>
+			streamOpenAICodexResponses(model, context, {
+				apiKey: codexToken("acct-b"),
+				fetch: codexBackend(rejection, sent),
+				providerSessionState,
+			}).result();
+
+		expect((await run(sessionContext())).stopReason).toBe("stop");
+		expect(sent).toEqual([[ENCRYPTED], []]);
+
+		// The next turn adds reasoning this account minted; only that one is sent.
+		sent.length = 0;
+		const ownTurn = [
+			{ ...CODEX_REASONING_ITEM, id: "rs_new", encrypted_content: "minted-by-acct-b" },
+			{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Stairs found." }] },
+		];
+		expect((await run(sessionContext(ownTurn))).stopReason).toBe("stop");
+		expect(sent).toEqual([["minted-by-acct-b"]]);
+	});
+
+	it("retries without the reasoning when the stream reports it lacks its following item", async () => {
+		const sent: unknown[][] = [];
+		const missingFollowingItem = () =>
+			new Response(
+				`data: ${JSON.stringify({
+					type: "error",
+					error: {
+						type: "invalid_request_error",
+						message: "Item 'rs_own' of type 'reasoning' was provided without its required following item.",
+						param: "input",
+					},
+				})}\n\n`,
+				{ headers: { "content-type": "text/event-stream" } },
+			);
+		const result = await streamOpenAICodexResponses(model, sessionContext(), {
+			apiKey: codexToken("acct-b"),
+			fetch: codexBackend(missingFollowingItem, sent),
+		}).result();
+
+		expect(result.stopReason).toBe("stop");
+		expect(sent).toEqual([[ENCRYPTED], []]);
 	});
 });
