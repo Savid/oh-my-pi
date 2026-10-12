@@ -584,6 +584,25 @@ function targetReplaysPlaintextReasoning(model: Model, compat: Model["compat"]):
 	}
 }
 
+/**
+ * The OpenAI Responses `reasoning` item a thinking signature serializes, if it
+ * is one, reduced to its `encrypted_content`. Responses providers and the
+ * auth-gateway Responses route keep the whole item there; every other
+ * signature is an opaque string.
+ */
+function parseResponsesReasoningSignature(signature: string | undefined): { encryptedContent: unknown } | undefined {
+	if (!signature?.startsWith("{")) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(signature);
+		if (typeof parsed !== "object" || parsed === null || !("type" in parsed) || parsed.type !== "reasoning") {
+			return undefined;
+		}
+		return { encryptedContent: "encrypted_content" in parsed ? parsed.encrypted_content : undefined };
+	} catch {
+		return undefined;
+	}
+}
+
 function fallbackAnthropicToolCallId(originalId: string): string {
 	return `toolu_${Bun.hash(originalId).toString(36)}`;
 }
@@ -910,6 +929,11 @@ export function transformMessages<TApi extends Api>(
 					},
 					model,
 				);
+			// Auth-gateway routes label each turn a client replays with the
+			// route's own wire format and the `<provider>/<id>` the client
+			// requested, so a turn this target produced through the gateway
+			// never matches `isSameModel`. A label naming the target marks one.
+			const isGatewayReplayOfTarget = !isSameModel && assistantMsg.model === `${model.provider}/${model.id}`;
 
 			const isAnthropicTarget = isAnthropicMessagesModel(model);
 			// Anthropic's all-or-none contract on prior-turn thinking blocks
@@ -1086,6 +1110,18 @@ export function transformMessages<TApi extends Api>(
 					// (the encoder needs them for native replay; an OpenAI encrypted
 					// reasoning blob has empty text but a load-bearing signature).
 					if (isSameModel && sanitized.thinkingSignature) return sanitized;
+					const responsesReasoning = parseResponsesReasoningSignature(sanitized.thinkingSignature);
+					// A Codex target's own reasoning item, replayed by a gateway
+					// client, still carries the `encrypted_content` Codex decrypts:
+					// it replays natively, as the target's own turns do.
+					if (
+						isGatewayReplayOfTarget &&
+						model.api === "openai-codex-responses" &&
+						typeof responsesReasoning?.encryptedContent === "string" &&
+						responsesReasoning.encryptedContent.length > 0
+					) {
+						return sanitized;
+					}
 					// Nothing left for the next turn to replay: drop empty/no-anchor
 					// thinking blocks before the cross-model paths.
 					if (!sanitized.thinking || sanitized.thinking.trim() === "") return [];
@@ -1107,14 +1143,19 @@ export function transformMessages<TApi extends Api>(
 					if (carriesSameModelReasoning && sanitized.summary === false) {
 						return { type: "thinking" as const, thinking: sanitized.thinking, [kCarriedReasoning]: true };
 					}
-					// Codex targets drop it instead. Codex replays only its own
-					// encrypted reasoning items, which the same-model path above keeps,
-					// and a native Codex client never sends prior reasoning back as
-					// text. Auth-gateway clients echo back the reasoning summaries the
-					// gateway streamed them (chat `reasoning_content`, Responses
-					// `reasoning` items); demoted, every replayed turn would show the
-					// model its own summaries as `<think>`-tagged `output_text`.
+					// Codex targets drop any other reasoning. Codex reads prior
+					// reasoning only from its own encrypted items, kept above; text
+					// such as a gateway client's echoed summaries (chat
+					// `reasoning_content`, Responses `reasoning` items without
+					// `encrypted_content`, Anthropic thinking) would reach the model
+					// as its own `<think>`-tagged `output_text`.
 					if (model.api === "openai-codex-responses") return [];
+					// A gateway client's replayed Responses reasoning item is the
+					// summary the gateway streamed of this target's own reasoning,
+					// without the signature the target needs to replay it. Drop it:
+					// demoted, the model would read its own reasoning as printed
+					// output.
+					if (isGatewayReplayOfTarget && responsesReasoning) return [];
 					// Other cross-API targets (openai-responses encrypted blobs, google
 					// thought parts, anthropic-target from a non-Anthropic source, or any
 					// reasoning-disabled target) can't replay an unsigned thinking block:
