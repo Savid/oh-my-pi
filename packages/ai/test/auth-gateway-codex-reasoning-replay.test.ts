@@ -1,23 +1,35 @@
 import { describe, expect, it } from "bun:test";
+import { parseRequest as parseMessagesRequest } from "@oh-my-pi/pi-ai/providers/anthropic-messages-server";
 import { parseRequest } from "@oh-my-pi/pi-ai/providers/openai-chat-server";
 import { convertCodexResponsesMessages } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
-import { parseRequest as parseResponsesRequest } from "@oh-my-pi/pi-ai/providers/openai-responses-server";
+import { encodeStream, parseRequest as parseResponsesRequest } from "@oh-my-pi/pi-ai/providers/openai-responses-server";
 import type { ResponseInput } from "@oh-my-pi/pi-ai/providers/openai-responses-wire";
 import { transformMessages } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import type { Api, AssistantMessage, Context, Model, ModelSpec } from "@oh-my-pi/pi-ai/types";
+import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { createCodexModel } from "./helpers";
 
 /**
- * Auth-gateway clients send back the reasoning summaries the gateway streamed
- * them: chat clients (pi, OpenCode v2) as `reasoning_content`, Responses
- * clients (Codex) as `reasoning` items. For a Codex target that text must not
- * reach the model: demoted, it arrives as the model's own `<think>`-tagged
- * `output_text`, which a native Codex client never sends.
+ * Auth-gateway clients send back the reasoning the gateway streamed them: chat
+ * clients (pi, OpenCode v2) as `reasoning_content`, Responses clients (Codex)
+ * as `reasoning` items, Messages clients (Claude Code) as signed thinking. A
+ * Codex target replays only its own encrypted reasoning items; any other
+ * reasoning text would reach the model as its own `<think>`-tagged
+ * `output_text`.
  */
 const ROUTE_SUMMARY = "**Planning the route east**";
 const MAP_SUMMARY = "**Checking the map for stairs**";
 const ORPHAN_SUMMARY = "**Weighing a retreat**";
+const ENCRYPTED = "opaque-encrypted-reasoning";
+
+/** The reasoning item Codex returns, as its provider keeps it in the thinking signature. */
+const CODEX_REASONING_ITEM = {
+	type: "reasoning",
+	id: "rs_own",
+	summary: [{ type: "summary_text", text: ROUTE_SUMMARY }],
+	encrypted_content: ENCRYPTED,
+};
 
 function chatClientContext(): Context {
 	return parseRequest({
@@ -56,6 +68,12 @@ function assistantOutputTexts(items: ResponseInput): string[] {
 	return texts;
 }
 
+function encryptedReasoning(items: ResponseInput): unknown[] {
+	return items.flatMap(item =>
+		"type" in item && item.type === "reasoning" && "encrypted_content" in item ? [item.encrypted_content] : [],
+	);
+}
+
 function makeModel<T extends Api>(api: T, provider: string, id: string): Model<T> {
 	return buildModel({
 		id,
@@ -69,6 +87,64 @@ function makeModel<T extends Api>(api: T, provider: string, id: string): Model<T
 		contextWindow: 200_000,
 		reasoning: true,
 	} as ModelSpec<T>);
+}
+
+function zeroUsage(): AssistantMessage["usage"] {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
+/** The items a Responses client keeps from the gateway's stream of one Codex turn: each `output_item.done`. */
+async function streamedCodexTurn(): Promise<Record<string, unknown>[]> {
+	const toolCall = { type: "toolCall" as const, id: "call_move|fc_upstream", name: "nh", arguments: { cmd: "l" } };
+	const turn: AssistantMessage = {
+		role: "assistant",
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		model: "gpt-6-luna",
+		content: [
+			{
+				type: "thinking",
+				thinking: ROUTE_SUMMARY,
+				thinkingSignature: JSON.stringify(CODEX_REASONING_ITEM),
+				itemId: "rs_own",
+			},
+			toolCall,
+		],
+		usage: zeroUsage(),
+		stopReason: "toolUse",
+		timestamp: 0,
+	};
+	// The provider sets the signature when the upstream item is done.
+	const streaming: AssistantMessage = {
+		...turn,
+		content: [{ type: "thinking", thinking: "", itemId: "rs_own" }],
+	};
+	const stream = new AssistantMessageEventStream();
+	queueMicrotask(() => {
+		stream.push({ type: "start", partial: { ...turn, content: [] } });
+		stream.push({ type: "thinking_start", contentIndex: 0, partial: streaming });
+		stream.push({ type: "thinking_delta", contentIndex: 0, delta: ROUTE_SUMMARY, partial: streaming });
+		stream.push({ type: "thinking_end", contentIndex: 0, content: ROUTE_SUMMARY, partial: turn });
+		stream.push({ type: "toolcall_start", contentIndex: 1, partial: turn });
+		stream.push({ type: "toolcall_end", contentIndex: 1, toolCall, partial: turn });
+		stream.push({ type: "done", reason: "toolUse", message: turn });
+	});
+	const raw = await new Response(encodeStream(stream, "openai-codex/gpt-6-luna")).text();
+	const items: Record<string, unknown>[] = [];
+	for (const frame of raw.split("\n\n")) {
+		const data = frame.split("\n").find(line => line.startsWith("data: {"));
+		if (!data) continue;
+		const event = JSON.parse(data.slice("data: ".length)) as { type: string; item?: Record<string, unknown> };
+		if (event.type === "response.output_item.done" && event.item) items.push(event.item);
+	}
+	return items;
 }
 
 describe("auth-gateway replay of streamed reasoning to Codex", () => {
@@ -106,42 +182,72 @@ describe("auth-gateway replay of streamed reasoning to Codex", () => {
 		expect(input.some(item => "type" in item && item.type === "function_call")).toBe(true);
 	});
 
-	it("still replays Codex's own encrypted reasoning item on a same-model turn", () => {
-		const reasoningItem = {
-			type: "reasoning",
-			id: "rs_own",
-			summary: [{ type: "summary_text", text: ROUTE_SUMMARY }],
-			encrypted_content: "opaque-encrypted-reasoning",
-		};
-		const own: AssistantMessage = {
+	it("replays the encrypted reasoning a Codex client kept from the gateway's stream", async () => {
+		const { context } = parseResponsesRequest({
+			model: "openai-codex/gpt-6-luna",
+			include: ["reasoning.encrypted_content"],
+			input: [
+				{ type: "message", role: "user", content: [{ type: "input_text", text: "Find the down stairs." }] },
+				...(await streamedCodexTurn()),
+				{ type: "function_call_output", call_id: "call_move", output: "You see a staircase." },
+				{ type: "message", role: "user", content: [{ type: "input_text", text: "Descend." }] },
+			],
+		});
+		const input = convertCodexResponsesMessages(createCodexModel("gpt-6-luna"), context);
+
+		expect(encryptedReasoning(input)).toEqual([ENCRYPTED]);
+		const types = input.map(item => ("type" in item ? item.type : "message"));
+		expect(types).toEqual(["message", "reasoning", "function_call", "function_call_output", "message"]);
+		expect(assistantOutputTexts(input)).toEqual([]);
+		expect(wireText(input)).not.toContain("<think>");
+	});
+
+	it("replays Codex's encrypted reasoning a Claude client sends back as a thinking signature", () => {
+		const { context } = parseMessagesRequest({
+			model: "openai-codex/gpt-6.1-sol",
+			max_tokens: 1_000,
+			messages: [
+				{ role: "user", content: "Find the down stairs." },
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: ROUTE_SUMMARY, signature: JSON.stringify(CODEX_REASONING_ITEM) },
+						{ type: "tool_use", id: "toolu_move", name: "nh", input: { cmd: "l" } },
+					],
+				},
+				{
+					role: "user",
+					content: [{ type: "tool_result", tool_use_id: "toolu_move", content: "You see a staircase." }],
+				},
+			],
+		});
+		const input = convertCodexResponsesMessages(createCodexModel("gpt-6.1-sol"), context);
+
+		expect(encryptedReasoning(input)).toEqual([ENCRYPTED]);
+		expect(assistantOutputTexts(input)).toEqual([]);
+		expect(wireText(input)).not.toContain("<think>");
+	});
+
+	it("does not replay encrypted reasoning from a turn another provider produced", () => {
+		const platformTurn: AssistantMessage = {
 			role: "assistant",
 			content: [
-				{ type: "thinking", thinking: ROUTE_SUMMARY, thinkingSignature: JSON.stringify(reasoningItem) },
+				{ type: "thinking", thinking: ROUTE_SUMMARY, thinkingSignature: JSON.stringify(CODEX_REASONING_ITEM) },
 				{ type: "text", text: "Heading east." },
 			],
-			api: "openai-codex-responses",
-			provider: "openai-codex",
+			api: "openai-responses",
+			provider: "openai",
 			model: "gpt-6-luna",
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
+			usage: zeroUsage(),
 			stopReason: "stop",
 			timestamp: 0,
 		};
 		const input = convertCodexResponsesMessages(createCodexModel("gpt-6-luna"), {
-			messages: [{ role: "user", content: "Find the down stairs.", timestamp: 0 }, own],
+			messages: [{ role: "user", content: "Find the down stairs.", timestamp: 0 }, platformTurn],
 		});
 
-		const replayed = input.find(item => "type" in item && item.type === "reasoning");
-		expect(replayed && "encrypted_content" in replayed ? replayed.encrypted_content : undefined).toBe(
-			"opaque-encrypted-reasoning",
-		);
-		expect(wireText(input)).not.toContain("<think>");
+		expect(encryptedReasoning(input)).toEqual([]);
+		expect(wireText(input)).not.toContain(ROUTE_SUMMARY);
 	});
 
 	it("leaves the demoted text in place for a non-Codex Responses target", () => {
@@ -152,5 +258,28 @@ describe("auth-gateway replay of streamed reasoning to Codex", () => {
 			.flatMap(m => m.content)
 			.filter(block => block.type === "text" && block.text.includes("<think>"));
 		expect(demoted).toHaveLength(3);
+	});
+});
+
+describe("auth-gateway replay of streamed reasoning to Anthropic", () => {
+	it("drops a Codex client's reasoning summary instead of printing it as assistant text", () => {
+		const { context } = parseResponsesRequest({
+			model: "anthropic/claude-sonnet-5-5",
+			input: [
+				{ type: "message", role: "user", content: [{ type: "input_text", text: "Find the down stairs." }] },
+				{ type: "reasoning", id: "rs_client", summary: [{ type: "summary_text", text: ROUTE_SUMMARY }] },
+				{ type: "function_call", call_id: "call_move", name: "nh", arguments: '{"cmd":"l"}' },
+				{ type: "function_call_output", call_id: "call_move", output: "You see a staircase." },
+				{ type: "message", role: "user", content: [{ type: "input_text", text: "Descend." }] },
+			],
+		});
+		const out = transformMessages(
+			context.messages,
+			makeModel("anthropic-messages", "anthropic", "claude-sonnet-5-5"),
+		);
+		const blocks = out.filter((m): m is AssistantMessage => m.role === "assistant").flatMap(m => m.content);
+
+		expect(JSON.stringify(blocks)).not.toContain(ROUTE_SUMMARY);
+		expect(blocks.map(block => block.type)).toEqual(["toolCall"]);
 	});
 });

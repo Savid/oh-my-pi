@@ -573,6 +573,14 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 			// Other item types are tolerated but not bridged.
 		}
 	}
+	// The wire carries no stop reason, but tool calls answered by their outputs
+	// did request execution. A constant "stop" reads as an abandoned tool-use
+	// turn and strips the turn's reasoning signatures.
+	for (const message of messages) {
+		if (message.role === "assistant" && message.content.some(block => block.type === "toolCall")) {
+			message.stopReason = "toolUse";
+		}
+	}
 
 	const tools = buildTools(data.tools);
 	const context: Context = {
@@ -932,6 +940,8 @@ interface OpenReasoning {
 	itemId: string;
 	outputIndex: number;
 	reasoningText: string;
+	/** The finished block's signature: the upstream reasoning item for Responses providers. */
+	signature?: string;
 }
 interface OpenFunctionCall {
 	kind: "function_call";
@@ -1208,8 +1218,15 @@ export function encodeStream(
 					removeOpenItem(target);
 					if (state.open === target) state.open = null;
 				} else if (target.kind === "reasoning") {
-					const summary = [{ type: "summary_text" as const, text: target.reasoningText ?? "" }];
-					const item = { type: "reasoning" as const, id: target.itemId, summary };
+					// The same item `response.completed` carries, `encrypted_content`
+					// included: clients such as Codex keep the done item as history
+					// and replay it.
+					const item = buildReasoningItem({
+						type: "thinking",
+						thinking: target.reasoningText,
+						thinkingSignature: target.signature,
+						itemId: target.itemId,
+					});
 					emit("response.output_item.done", { output_index: target.outputIndex, item });
 					finishedItems.push(item);
 					removeOpenItem(target);
@@ -1344,6 +1361,8 @@ export function encodeStream(
 							const cur = item;
 							const text = ev.content ?? cur.reasoningText;
 							cur.reasoningText = text;
+							const part = ev.partial.content[ev.contentIndex];
+							if (part?.type === "thinking") cur.signature = part.thinkingSignature;
 							emit("response.reasoning_summary_text.done", {
 								item_id: cur.itemId,
 								output_index: cur.outputIndex,
