@@ -2437,6 +2437,29 @@ function isResponsesAssistantTurnBoundary(item: ResponseInput[number]): boolean 
 	return "role" in item && item.role !== "assistant";
 }
 
+/**
+ * Drop each reasoning item that no output item of its own turn follows. The
+ * Responses API rejects a replayed reasoning item without the item it led to
+ * ("Item 'rs_…' of type 'reasoning' was provided without its required
+ * following item"); a turn cut after its reasoning, or whose call was never
+ * delivered, leaves exactly that. Item ids play no part: Codex strips them
+ * from every input item it sends.
+ */
+export function dropUnfollowedResponsesReasoning(items: ResponseInput): ResponseInput {
+	const kept: ResponseInput = [];
+	let followed = false;
+	for (let index = items.length - 1; index >= 0; index--) {
+		const item = items[index];
+		if (item.type === "reasoning") {
+			if (followed) kept.push(item);
+			continue;
+		}
+		followed = item.type !== "item_reference" && !isResponsesAssistantTurnBoundary(item);
+		kept.push(item);
+	}
+	return kept.length === items.length ? items : kept.reverse();
+}
+
 function ensureRequiredResponsesReasoningReplay(
 	items: ResponseInput,
 	stopReason: AssistantMessage["stopReason"],

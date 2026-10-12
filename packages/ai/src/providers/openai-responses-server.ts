@@ -437,23 +437,9 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 							id: msg.id,
 							phase: msg.phase,
 						});
-						messages.push({
-							role: "assistant",
-							content: parts,
-							api: "openai-responses",
-							provider: "openai",
-							model: data.model,
-							usage: {
-								input: 0,
-								output: 0,
-								cacheRead: 0,
-								cacheWrite: 0,
-								totalTokens: 0,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-							},
-							stopReason: "stop",
-							timestamp: now,
-						});
+						// One response's output items (reasoning, messages, calls) form one
+						// assistant turn, so a message joins the turn its reasoning opened.
+						ensureAssistantPlaceholder(messages, data.model, now).content.push(...parts);
 						break;
 					}
 				}

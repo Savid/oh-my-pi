@@ -96,6 +96,11 @@ import {
 	planSteeredRequest,
 	toSteerInputItems,
 } from "./openai-codex/live-steering";
+import {
+	dropRejectedCodexReasoning,
+	dropRememberedRejectedCodexReasoning,
+	type RejectedCodexReasoning,
+} from "./openai-codex/replayed-reasoning";
 import { CodexApiError } from "./openai-codex/response-handler";
 import { getCodexAttestationHeader } from "./openai-codex-attestation";
 export { createOpenAICodexCompactionRequestContext } from "./openai-codex-compaction";
@@ -136,6 +141,7 @@ import {
 	convertResponsesAssistantMessage,
 	convertResponsesInputContent,
 	createSequentialCutoffSummaryState,
+	dropUnfollowedResponsesReasoning,
 	encodeResponsesToolCallId,
 	encodeTextSignatureV1,
 	escapeReplayedControlTokens,
@@ -478,6 +484,8 @@ interface CodexProviderSessionState extends ProviderSessionState {
 	metadataSessions: Map<string, CodexMetadataSessionState>;
 	/** `configuration_update` effort baselines, keyed by model + session. */
 	effortControls: Map<string, OpenAIEffortControlState<ReasoningConfig["effort"]>>;
+	/** Replayed reasoning the backend rejected for this session; later requests leave it out. */
+	rejectedReasoning: RejectedCodexReasoning;
 }
 
 /** Request classification encoded in Codex turn metadata. */
@@ -1071,6 +1079,7 @@ function createCodexProviderSessionState(): CodexProviderSessionState {
 			state.metadataSessions.delete(normalizedSessionId);
 			releaseOpenAIEffortControlSession(state.effortControls, normalizedSessionId);
 		},
+		rejectedReasoning: new Set(),
 		close: () => {
 			for (const session of state.webSocketSessions.values()) {
 				session.connection?.close("session_disposed");
@@ -1079,6 +1088,7 @@ function createCodexProviderSessionState(): CodexProviderSessionState {
 			state.webSocketPublicToPrivate.clear();
 			state.metadataSessions.clear();
 			state.effortControls.clear();
+			state.rejectedReasoning.clear();
 		},
 	};
 	return state;
@@ -1094,7 +1104,9 @@ function isCodexProviderSessionState(state: ProviderSessionState | undefined): s
 		"metadataSessions" in state &&
 		state.metadataSessions instanceof Map &&
 		"effortControls" in state &&
-		state.effortControls instanceof Map
+		state.effortControls instanceof Map &&
+		"rejectedReasoning" in state &&
+		state.rejectedReasoning instanceof Set
 	);
 }
 
@@ -1473,6 +1485,7 @@ function createCodexRequestContext(
 	};
 
 	const providerSessionState = getCodexProviderSessionState(options?.providerSessionState);
+	dropRememberedRejectedCodexReasoning(transformedBody, providerSessionState?.rejectedReasoning);
 	const isolatedTransportState =
 		contextOptions.isolateCompactionTransport && options?.codexCompaction
 			? createCodexProviderSessionState()
@@ -1711,11 +1724,25 @@ async function openInitialCodexEventStream(
 	} else if (websocketState) {
 		releaseIdleCodexWebSocket(websocketState);
 	}
-	try {
-		return await openCodexSseTransport(model, requestContext, requestSetup, options, websocketState, transformedBody);
-	} catch (error) {
-		if (!dropRejectedCodexAccessPrograms(transformedBody, model, requestContext.accountId, error)) throw error;
-		return openCodexSseTransport(model, requestContext, requestSetup, options, websocketState, transformedBody);
+	while (true) {
+		try {
+			return await openCodexSseTransport(
+				model,
+				requestContext,
+				requestSetup,
+				options,
+				websocketState,
+				transformedBody,
+			);
+		} catch (error) {
+			// Each drop removes what the backend rejected, so neither replays twice.
+			if (
+				!dropRejectedCodexAccessPrograms(transformedBody, model, requestContext.accountId, error) &&
+				!dropRejectedCodexReasoning(transformedBody, error, requestContext.providerSessionState?.rejectedReasoning)
+			) {
+				throw error;
+			}
+		}
 	}
 }
 
@@ -2849,6 +2876,9 @@ class CodexStreamProcessor {
 		if (await this.#tryDropRejectedAccessPrograms(error)) {
 			return true;
 		}
+		if (await this.#tryDropRejectedReasoning(error)) {
+			return true;
+		}
 		if (await this.#tryRecoverWhitespaceToolCallLoop(error)) {
 			return true;
 		}
@@ -3024,6 +3054,33 @@ class CodexStreamProcessor {
 		) {
 			return false;
 		}
+		await this.#replayRejectedRequest();
+		return true;
+	}
+
+	/**
+	 * Replay the request without the reasoning the backend rejected (see
+	 * `openai-codex/replayed-reasoning.ts`). The rejection arrives before any
+	 * output, so the replay is always safe.
+	 */
+	async #tryDropRejectedReasoning(error: unknown): Promise<boolean> {
+		if (
+			hasVisibleAssistantContent(this.output) ||
+			this.options?.signal?.aborted ||
+			!dropRejectedCodexReasoning(
+				this.requestContext.transformedBody,
+				error,
+				this.requestContext.providerSessionState?.rejectedReasoning,
+			)
+		) {
+			return false;
+		}
+		await this.#replayRejectedRequest();
+		return true;
+	}
+
+	/** Send the (amended) request again from scratch on the transport in use. */
+	async #replayRejectedRequest(): Promise<void> {
 		this.#closeOpenBlocksForReplay();
 		const websocketState = this.requestContext.websocketState;
 		if (websocketState) resetCodexWebSocketAppendState(websocketState);
@@ -3036,7 +3093,6 @@ class CodexStreamProcessor {
 		} else {
 			await this.#reopenSseStream(websocketState);
 		}
-		return true;
 	}
 
 	async #tryRecoverPreviousResponseNotFound(error: unknown): Promise<boolean> {
@@ -5105,7 +5161,7 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 		msgIndex += 1;
 	}
 
-	return messages;
+	return dropUnfollowedResponsesReasoning(messages);
 }
 
 function normalizeInputMessageContent(
