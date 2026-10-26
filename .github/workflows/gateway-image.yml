@@ -8,6 +8,7 @@ on:
       paths:
          - "gateway/**"
          - "packages/ai/src/**"
+         - "packages/catalog/src/**"
          - ".github/workflows/gateway-image.yml"
    workflow_dispatch:
 

@@ -3,3 +3,4 @@
 !gateway/bun.lock
 !gateway/start.ts
 !packages/ai/src
+!packages/catalog/src
