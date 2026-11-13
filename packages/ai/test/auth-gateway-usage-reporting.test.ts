@@ -142,7 +142,9 @@ describe("auth-gateway Chat Completions: signed Anthropic thinking round trip", 
 				{ type: "text", text: "done" },
 			],
 		});
-		const choice = (encodeChatResponse(message, "claude-test").choices as Array<{ message: Record<string, unknown> }>)[0]!;
+		const choice = (
+			encodeChatResponse(message, "claude-test").choices as Array<{ message: Record<string, unknown> }>
+		)[0]!;
 		expect(choice.message.reasoning_details).toEqual([
 			{ type: "reasoning.text", text: "plan the move", signature: "sig-1", format: "anthropic-claude-v1", index: 0 },
 			{ type: "reasoning.encrypted", data: "opaque", format: "anthropic-claude-v1", index: 1 },

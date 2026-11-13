@@ -3,7 +3,7 @@
 # place of pi-ai's and pi-catalog's, so no native build is needed. Keep that pin
 # equal to packages/ai/package.json's version.
 # Build from the repository root: docker build -f gateway/Dockerfile .
-FROM oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4
+FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d
 WORKDIR /opt/gateway
 COPY gateway/package.json gateway/bun.lock ./
 RUN bun install --frozen-lockfile
