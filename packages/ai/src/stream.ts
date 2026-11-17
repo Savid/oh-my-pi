@@ -88,6 +88,7 @@ import { getHeaderCaseInsensitive, resolveCacheRetention } from "./utils";
 import { AssistantMessageEventStream } from "./utils/event-stream";
 import { applyGlyphCodec } from "./utils/glyph-codec";
 import { wrapLeakedThinkingStream } from "./utils/leaked-thinking-stream";
+import { withResolvedHeaders } from "./utils/model-headers";
 import { withThinkingLoopGuard } from "./utils/thinking-loop";
 import { withTransportFetch } from "./utils/transport-fetch";
 
@@ -844,15 +845,12 @@ function withResolvedModelHeaders<TApi extends Api>(
 	signal: AbortSignal | undefined,
 	run: (resolvedModel: Model<TApi>) => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
-	const resolveHeaders = model.resolveHeaders;
-	if (!resolveHeaders) return run(model);
+	if (!model.resolveHeaders) return run(model);
 
 	const outer = new AssistantMessageEventStream();
 	void (async () => {
 		try {
-			const headers = await untilAborted(signal, () => resolveHeaders(signal));
-			signal?.throwIfAborted();
-			const inner = run({ ...model, resolveHeaders: undefined, headers: headers ? { ...headers } : undefined });
+			const inner = run(await withResolvedHeaders(model, signal));
 			for await (const event of inner) {
 				outer.push(event);
 				if (outer.done) return;
@@ -1877,6 +1875,7 @@ function mapOptionsForApi<TApi extends Api>(
 		fallbacks: options?.fallbacks,
 		acceptEmptyResponse: options?.acceptEmptyResponse,
 		anthropicPrefixMismatchBehavior: options?.anthropicPrefixMismatchBehavior,
+		omitDemotedReasoning: options?.omitDemotedReasoning,
 		anthropicCompaction: options?.anthropicCompaction,
 		anthropicSlowMode: options?.anthropicSlowMode,
 		userProfileId: options?.userProfileId,

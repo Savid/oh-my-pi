@@ -2,6 +2,69 @@
 
 ## [Unreleased]
 
+## [18.22.1] - 2026-11-17
+
+### Breaking Changes
+
+- The JavaScript eval `commit` helper now validates its arguments strictly: unknown option names and non-object options throw a `TypeError` that lists the supported options. Update scripts that pass extra options. Committing an unchanged draft repository now reports that it is unchanged instead of suggesting `take()`.
+
+### Added
+
+- Added the `providers.webKeyless` setting, enabled by default, to control whether web search and URL reading may use keyless services. Disable it to restrict these operations to configured providers; individual `omp q --model web/<engine>` requests can still explicitly run a keyless engine.
+- Added configurable live voice endpoints and API keys through `live.endpoint` and `live.apiKey`. Live voice can now connect to any OpenAI Realtime WebRTC-compatible server without Codex or ChatGPT sign-in, including offline use, and `live.voice` accepts arbitrary voice names.
+- Computer `el.setValue()` now accepts finite safe integer and decimal numbers and writes them as text, while continuing to reject unsupported values such as booleans, objects, `NaN`, and `Infinity`.
+- On macOS, browser results now report relevant native windows—such as pickers, print or save sheets, sign-in prompts, passkey dialogs, and permission bubbles—with their `computer.window()` identifiers.
+- Browser `select()` now accepts label-, value-, and zero-based index-based choices, including mixed choices for multi-select controls, across Chromium, Tern, and cmux tabs.
+
+### Changed
+
+- Keyless Parallel searches no longer send session or model identifiers; only the search query is sent.
+- The `computer` tool's macOS takeover messages now describe the actual keyboard handoff state and explain the behavior of background window moves and hover-only controls.
+- Chromium `tab.observe()` and `tab.ariaSnapshot()` now wait briefly for page updates triggered by preceding actions, producing more reliable post-action results.
+- When another agent controls the desktop, `InputBusy` now identifies that agent and its omp process.
+- Subagents now use their own browser context by default instead of opening tabs in the user's Chrome, Tern, or cmux session; relay or Tern access can still be requested explicitly.
+- Browser task guidance is now delivered automatically after the first browser call, with safety guidance available before the first call and restored after compaction or rewind.
+- Named-menu reads now include nested commands with their complete command paths.
+- The eval `commit` helper now runs configured Git hooks in addition to hooks in `.git/hooks/`, matching `git commit` behavior. Configured hooks may cause commits to take longer or be rejected.
+- Service readiness patterns now match line boundaries correctly, and shell file-time commands honor the configured `TZ` timezone.
+- Large `write` and `edit` calls remain responsive while their arguments stream.
+- Selective commits now handle initialized submodule pointers and sparse checkouts more accurately, and report unmatched paths explicitly.
+- Git commit operations now provide clearer status and hook feedback, including unchanged repositories, hook output, hook-modified commit subjects, and repositories with an in-progress operation or unresolved conflicts.
+- `/continue` now resumes the newest session for the current directory when the most recent session was created elsewhere before receiving its first message.
+- `/copy` now copies the content displayed by mid-turn `out://` replies and preserves their code blocks.
+- Tools enabled in goal mode remain available after leaving that mode.
+- Status-line usage now reflects the credential actually selected for multi-credential providers.
+- Custom providers using the Zhipu Coding Plan endpoint now retry at the correct Beijing-time quota reset.
+- `^model` references followed by sentence punctuation now resolve as model-agent references.
+- `/restart` now restarts through the original launcher so upgraded installations are used by the resumed session.
+- RPC hosts reliably receive completion events after quota errors, and OSC 7501 terminals no longer play stale success notifications during a newer run.
+
+### Fixed
+
+- Fixed configured Exa and Firecrawl credentials silently falling back to keyless endpoints when credential resolution failed; credential errors are now reported.
+- Fixed eval cells bypassing delegated-task completion with `yield`; use the direct tool instead.
+- Fixed `/commit` and eval commits creating incorrect single-parent commits during merge and other Git operations; commits are now refused while an operation is in progress or conflicts remain.
+- Fixed the `apply_patch` tool documentation incorrectly describing it as a shell command and disallowing absolute paths.
+- Fixed the shell `rg` builtin ignoring slash-containing `--glob` patterns.
+- Fixed `eval commit only(...)` failing when a selected path or glob matched no changed files.
+- Fixed browser calls becoming permanently busy after interrupted page evaluation, and fixed stale JavaScript `confirm` or `prompt` dialogs causing subsequent calls to fail.
+- Fixed macOS Chrome and Electron `computer.setValue()` failing to select an option from an empty option list.
+- Fixed browser relay tabs being closed when another extension—such as a password manager—holds the tab; the tab now remains available for reattachment.
+- Fixed macOS computer takeovers failing to report user intervention when the user continued typing.
+- Improved browser relay errors for hidden extension frames by identifying the frame, extension, and page involved.
+- Fixed Anthropic web search for `site:` queries and safety-refused searches, including clearer refusal and provider-error reporting and appropriate retry behavior.
+- Subagents without an output schema no longer receive an unnecessary `yield` tool, and `yield` without data no longer incorrectly uses the last message as its result.
+- Fixed macOS popup and menu interactions that could leave menus open or press the wrong control.
+- Fixed Claude losing reasoning from earlier non-Claude model turns after model switches or compaction, and prevented refusal text from contaminating later requests.
+- Fixed selective commits skipping updated submodule pointers and incorrectly reporting sparse-checkout paths as deletions.
+- Fixed Git status scans hanging when background Git processes kept output pipes open.
+- Fixed first-launch WebKit startup on macOS falling back to Chromium while the engine was still initializing.
+- Fixed rejecting pre-commit hook output being omitted from commit errors.
+- Fixed Ghidra analysis of Objective-C message results and arm64 retain-register data in Mach-O binaries, including cached frameworks.
+- Fixed browser interactions behind modal dialogs incorrectly reporting success; covered fields and disabled elements are now rejected, and covered drag endpoints are detected.
+- Fixed RPC login for providers that require an at-your-own-risk confirmation; the confirmation is now presented to the host and login proceeds only after approval.
+- On Linux, language-server file watching no longer consumes excessive inotify watches in `node_modules` and `.git/objects`.
+
 ## [18.22.0] - 2026-11-16
 
 ### Breaking Changes
