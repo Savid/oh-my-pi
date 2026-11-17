@@ -91,8 +91,14 @@ export interface AnthropicThreadChain {
 interface AnthropicThreadAnchor {
 	/** Response `id` a continue names as `previous_message_id`. */
 	messageId: string;
-	/** Conversation the server holds for `messageId`: the request's full messages, then the response. */
-	messages: readonly MessageParam[];
+	/**
+	 * Conversation the server holds for `messageId` (the request's full
+	 * messages, then the response), one {@link messageDigest} per message. A
+	 * digest rather than the message: an anchor outlives its request, and an
+	 * agent conversation with screenshots runs to tens of megabytes, which a
+	 * gateway would otherwise pin once for every conversation it serves.
+	 */
+	digests: readonly string[];
 	/** Fixed and create-only fields of the thread; any change starts a new thread. */
 	fingerprint: ThreadFingerprint;
 	/** When the response was stored (`Date.now()`). */
@@ -190,6 +196,8 @@ export class AnthropicThreadTurn {
 				params: MessageCreateParamsStreaming;
 				betaHeader: string;
 				fingerprint: ThreadFingerprint;
+				/** {@link messageDigest} of each of `params.messages`. */
+				digests: readonly string[];
 				request: AnthropicThreadRequest;
 		  }
 		| undefined;
@@ -217,19 +225,20 @@ export class AnthropicThreadTurn {
 		if (planned?.params === params && planned.betaHeader === betaHeader) return planned.request;
 
 		const fingerprint = fingerprintOf(params, betaHeader);
+		const digests = params.messages.map(messageDigest);
 		const anchor = this.#forceCreate ? undefined : (this.#claimed ?? this.#chain.anchor);
 		let request: AnthropicThreadRequest;
 		if (
 			anchor &&
 			now - anchor.storedAt < THREAD_REUSE_WINDOW_MS &&
 			Bun.deepEquals(anchor.fingerprint, fingerprint) &&
-			extendsConversation(params.messages, anchor.messages)
+			extendsConversation(digests, anchor.digests)
 		) {
 			this.#claimed = anchor;
 			if (this.#chain.anchor === anchor) this.#chain.anchor = undefined;
 			const body: MessageCreateParamsStreaming = {
 				...params,
-				messages: continueBreakpoints(params.messages.slice(anchor.messages.length)),
+				messages: continueBreakpoints(params.messages.slice(anchor.digests.length)),
 				thread: { type: "continue", previous_message_id: anchor.messageId },
 			};
 			if (!this.#resendSystemAndTools) {
@@ -240,7 +249,7 @@ export class AnthropicThreadTurn {
 		} else {
 			request = { kind: "create", body: { ...params, thread: { type: "create" } } };
 		}
-		this.#planned = { params, betaHeader, fingerprint, request };
+		this.#planned = { params, betaHeader, fingerprint, digests, request };
 		return request;
 	}
 
@@ -303,7 +312,7 @@ export class AnthropicThreadTurn {
 		if (planned.request.kind === "continue" || !this.#forceCreate) this.#chain.refusedContinues = 0;
 		this.#chain.anchor = stored && {
 			messageId: stored.messageId,
-			messages: [...planned.params.messages, stored.message],
+			digests: [...planned.digests, messageDigest(stored.message)],
 			fingerprint: planned.fingerprint,
 			storedAt: now,
 		};
@@ -350,31 +359,44 @@ function threadErrorCode(error: unknown): string | undefined {
 	return THREAD_ERROR_TEXT.test(message) ? "thread_invalid_request" : undefined;
 }
 
-/** Whether `messages` appends at least one message to `held`, ignoring cache breakpoints. */
-function extendsConversation(messages: readonly MessageParam[], held: readonly MessageParam[]): boolean {
-	if (messages.length <= held.length) return false;
+/** Whether `digests` appends at least one message to the `held` conversation. */
+function extendsConversation(digests: readonly string[], held: readonly string[]): boolean {
+	if (digests.length <= held.length) return false;
 	for (let index = 0; index < held.length; index++) {
-		if (!sameMessage(messages[index], held[index])) return false;
+		if (digests[index] !== held[index]) return false;
 	}
 	return true;
 }
 
-function sameMessage(a: MessageParam, b: MessageParam): boolean {
-	if (a === b) return true;
-	if (a.role !== b.role || a.clear_at !== b.clear_at || !Bun.deepEquals(a.output_config, b.output_config)) {
-		return false;
-	}
-	if (typeof a.content === "string" || typeof b.content === "string") {
-		const text = soleText(a.content);
-		return text !== undefined && text === soleText(b.content);
-	}
-	if (a.content.length !== b.content.length) return false;
-	for (let index = 0; index < a.content.length; index++) {
-		if (!Bun.deepEquals(withoutCacheControl(a.content[index]), withoutCacheControl(b.content[index]))) {
-			return false;
-		}
-	}
-	return true;
+/**
+ * A message's identity for continuing a thread, ignoring cache breakpoints:
+ * two messages get the same digest when the server would hold them as the
+ * same message. String content and a lone text block that differs from it
+ * only by a breakpoint digest alike, since caching rewrites the one into the
+ * other. 128 bits of hash plus the length of what was hashed, so a collision
+ * that would continue the wrong conversation is not a practical concern.
+ */
+export function messageDigest(message: MessageParam): string {
+	const text = soleText(message.content);
+	const canonical = stableJson([
+		message.role,
+		message.clear_at,
+		message.output_config,
+		text !== undefined ? { text } : (message.content as ContentBlockParam[]).map(withoutCacheControl),
+	]);
+	const high = Bun.hash.wyhash(canonical, 0x6d65_7373n);
+	const low = Bun.hash.wyhash(canonical, 0x6469_6765n);
+	return `${high.toString(36)}.${low.toString(36)}.${canonical.length.toString(36)}`;
+}
+
+/** JSON with object keys sorted and `undefined` properties left out, so equal values serialize alike whatever their key order. */
+function stableJson(value: unknown): string {
+	return JSON.stringify(value, (_key, inner: unknown) => {
+		if (inner === null || typeof inner !== "object" || Array.isArray(inner)) return inner;
+		const sorted: Record<string, unknown> = {};
+		for (const key of Object.keys(inner).sort()) sorted[key] = (inner as Record<string, unknown>)[key];
+		return sorted;
+	});
 }
 
 /**
